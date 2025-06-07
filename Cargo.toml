@@ -1,0 +1,30 @@
+[package]
+name = "auto_aim_rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nalgebra = "0.33.2"
+ort = { path = "../../ort-main", features = ["ndarray", "cuda", "tensorrt"] }
+thiserror = "2.0.12"
+image = "0.25.6"
+tracing-subscriber = "0.3.19"
+tracing = "0.1.41"
+ndarray = "0.16.1"
+rerun = "0.23.3"
+cudarc = { version = "0.16.4", features = ["default", "cuda-12090"] }
+toml = "0.8.22"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.45.1", features = ["full"] }
+
+
+[[bin]]
+name = "test_error"
+path = "bin/test_error.rs"
+
+[[bin]]
+name = "test_single_thread"
+path = "bin/test_single_thread.rs"
+
+[profile.release]
+opt-level = 3
