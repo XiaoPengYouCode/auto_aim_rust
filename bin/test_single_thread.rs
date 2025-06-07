@@ -1,23 +1,39 @@
 use auto_aim_rust::config::RobotConfig;
 use auto_aim_rust::module::armor_detector;
-use auto_aim_rust::module::robot_solver;
+use auto_aim_rust::module::rbt_solver;
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt().init();
+async fn main() {
+    single_thread().await.unwrap();
+}
 
+async fn single_thread() -> Result<(), Box<dyn std::error::Error>> {
+    // read config file
     let robot_config = RobotConfig::read_from_toml().await?;
 
+    // init logger
+    let filter = tracing_subscriber::EnvFilter::new(robot_config.log_filter);
+    tracing_subscriber::fmt().with_env_filter(filter).init();
+
+    // for debug use
     // Stream log data to an awaiting `rerun` process.
-    let rec = rerun::RecordingStreamBuilder::new("rerun_example_app").connect_grpc()?;
+    let dbg = if robot_config.img_dbg_open {
+        let rec = rerun::RecordingStreamBuilder::new("rerun_example_app").connect_grpc()?;
+        Some(rec)
+    } else {
+        None
+    };
 
-    let armors = armor_detector::pipeline(&rec, robot_config.armor_detect_model_path.into())?;
-    // let armor_class =
-    //     armor_num_classify::pipeline(&rec, robot_config.armor_num_classify_model_path.into());
-    // let robot_solver = robot_solver::RobotSolver::from_armor_static_msg(armors)?;
-    // tracing::info!("robot_solver: {:?}", robot_solver.armor());
+    // armor detect using Yolo
+    let armors = armor_detector::pipeline(
+        &dbg, // for debug_use
+        robot_config.armor_detect_model_path.into(),
+        robot_config.armor_detect_engine_path.into(),
+    )?;
 
-    tokio::time::sleep(tokio::time::Duration::from_secs(1)).await;
+    let mut robot_solver = rbt_solver::RbtSolver::new()?;
+    let rbt_solver_result = robot_solver.solve_pnp(&dbg, armors)?;
+    tracing::info!("robot_solver: {:?}", rbt_solver_result);
 
     Ok(())
 }

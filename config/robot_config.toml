@@ -1,0 +1,5 @@
+armor_detect_model_path = "./model/armor/best_fp16.onnx"
+armor_detect_engine_path = "./model/armor"
+buff_detect_model_path = "./model/armor/buff.onnx"
+log_filter = "debug,ort=warn"
+img_dbg_open = false

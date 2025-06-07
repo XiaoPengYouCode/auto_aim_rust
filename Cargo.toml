@@ -5,22 +5,28 @@ edition = "2024"
 
 [dependencies]
 nalgebra = "0.33.2"
-ort = { path = "../../ort-main", features = ["ndarray", "cuda", "tensorrt"] }
+ort = { path = "../../ort-main", features = ["ndarray", "cuda", "tensorrt", "half"] }
 thiserror = "2.0.12"
 image = "0.25.6"
-tracing-subscriber = "0.3.19"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
 tracing = "0.1.41"
 ndarray = "0.16.1"
 rerun = "0.23.3"
-cudarc = { version = "0.16.4", features = ["default", "cuda-12090"] }
 toml = "0.8.22"
 serde = { version = "1.0.219", features = ["derive"] }
 tokio = { version = "1.45.1", features = ["full"] }
-
+argmin = "0.10.0"
+half = "2.6.0"
+argmin-math = { version = "0.4.0", features = ["vec"] }
+tokio-serial = "5.4.5"
 
 [[bin]]
 name = "test_error"
 path = "bin/test_error.rs"
+
+[[bin]]
+name = "test_serial"
+path = "bin/test_serial.rs"
 
 [[bin]]
 name = "test_single_thread"

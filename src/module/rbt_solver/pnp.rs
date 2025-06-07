@@ -2,6 +2,29 @@ use argmin::core::Executor;
 use argmin::solver::neldermead::NelderMead;
 use nalgebra::{Matrix3, Vector2, Vector3};
 
+#[derive(Debug)]
+pub struct PnpResult {
+    yaw: f64,
+    x: f64,
+    y: f64,
+    z: f64,
+    cost: f64,
+}
+
+impl PnpResult {
+    pub fn point_3d(&self) -> (f32, f32, f32) {
+        (self.x as f32, self.y as f32, self.z as f32)
+    }
+
+    pub fn yaw(&self) -> f64 {
+        self.yaw
+    }
+
+    pub fn world_yaw(&self) -> f64 {
+        180.0 - self.yaw
+    }
+}
+
 /// 建模，采用上海交通大学交龙战队降自由度PNP解算方案
 /// 默认Roll=0,Pitch=15,以提高Yaw轴解算精度，并降低算法复杂度
 /// from: 肖皓宇: 但是在坡上可能需要问题，需要测试
@@ -68,18 +91,34 @@ impl argmin::core::CostFunction for PoseEstimationProblem {
 
         // 计算重投影误差
         let mut total_error = 0.0;
-        for (p3d, p2d) in self.object_points.iter().zip(self.image_points.iter()) {
+        for (i, (p3d, p2d)) in self
+            .object_points
+            .iter()
+            .zip(self.image_points.iter())
+            .enumerate()
+        {
             let pc = rotation * p3d + translation;
             let projected = self.camera_matrix * pc;
             let projected = Vector2::new(projected.x / projected.z, projected.y / projected.z);
-            total_error += (projected - p2d).norm_squared();
-        }
+            let error = (projected - p2d).norm_squared();
+            total_error += error;
+            // 打印每个点的实际位置和重投影位置
+            tracing::debug!(
+                "点 {}: 图像点 = {:?}, 重投影点 = {:?}, 误差 = {}",
+                i,
+                p2d,
+                projected,
+                error
+            );
+        } // --- 调试关键 ---
+
+        tracing::debug!("当前参数: {:?}, 总误差: {}", param, total_error);
 
         Ok(total_error)
     }
 }
 
-pub fn solve_pnp(img_points: Vec<Vector2<f64>>) -> Result<Vec<f64>, Box<dyn std::error::Error>> {
+pub fn solve_pnp(img_points: Vec<Vector2<f64>>) -> Result<PnpResult, Box<dyn std::error::Error>> {
     let object_points: Vec<Vector3<f64>> = vec![
         Vector3::new(-135.0 / 2.0, 30.0, 0.0),
         Vector3::new(-135.0 / 2.0, -30.0, 0.0),
@@ -87,25 +126,52 @@ pub fn solve_pnp(img_points: Vec<Vector2<f64>>) -> Result<Vec<f64>, Box<dyn std:
         Vector3::new(135.0 / 2.0, 30.0, 0.0),
     ];
 
-    let camera_matrix: Matrix3<f64> =
-        Matrix3::new(4000.0, 0.0, 960.0, 0.0, 4000.0, 540.0, 0.0, 0.0, 1.0);
+    let camera_matrix: Matrix3<f64> = Matrix3::new(
+        1600.0, 0.0, 320.0, // fx, 0, cx
+        0.0, 1705.7, 192.0, // 0, fy, cy
+        0.0, 0.0, 1.0,
+    );
 
     let problem = PoseEstimationProblem {
         object_points,
-        image_points: img_points,
+        image_points: img_points.clone(),
         camera_matrix,
     };
 
-    // 初始参数猜测
-    let init_param = vec![0.0, 3000.0, 0.0, 100.0];
+    let init_param = if img_points[0].x < (640.0 / 2.0) {
+        vec![15.0_f64.to_radians(), 100.0, 100.0, 3000.0]
+    } else {
+        vec![-15.0_f64.to_radians(), 100.0, 100.0, 3000.0]
+    };
 
-    // 构建初始单纯形
+    let delta = [0.1, 1.0, 1.0, 100.0]; // 每个参数的小扰动
+
     let simplex = vec![
         init_param.clone(),
-        vec![0.1, 0.0, 0.0, 5.0],
-        vec![0.0, 0.1 * 3000.0, 0.0, 5.0 * 100.0],
-        vec![0.0, 0.0, 0.1, 5.0 * 100.0],
-        vec![0.0, 0.0, 0.0, 5.1 * 100.0],
+        vec![
+            init_param[0] + delta[0],
+            init_param[1],
+            init_param[2],
+            init_param[3],
+        ],
+        vec![
+            init_param[0],
+            init_param[1] + delta[1],
+            init_param[2],
+            init_param[3],
+        ],
+        vec![
+            init_param[0],
+            init_param[1],
+            init_param[2] + delta[2],
+            init_param[3],
+        ],
+        vec![
+            init_param[0],
+            init_param[1],
+            init_param[2],
+            init_param[3] + delta[3],
+        ],
     ];
 
     let solver = NelderMead::new(simplex);
@@ -117,5 +183,17 @@ pub fn solve_pnp(img_points: Vec<Vector2<f64>>) -> Result<Vec<f64>, Box<dyn std:
     tracing::debug!("最优参数: {:?}", res.state().best_param);
     tracing::debug!("最小误差: {:?}", res.state().best_cost);
 
-    Ok(res.state().clone().best_param.unwrap())
+    let rst = if let Some(param) = &res.state().best_param {
+        PnpResult {
+            yaw: param[0],
+            x: param[1],
+            y: param[2],
+            z: param[3],
+            cost: res.state.best_cost,
+        }
+    } else {
+        return Err("Failed to solve pnp".into());
+    };
+
+    Ok(rst)
 }

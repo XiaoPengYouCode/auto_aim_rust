@@ -6,12 +6,16 @@
 // 坐标系定义，以当前车体的中心点的地面投影为原点
 
 use crate::module::armor::ArmorStaticMsg;
-use crate::module::pnp::solve_pnp;
-use crate::robot_error::RbtError;
+use crate::module::rbt_solver::pnp::PnpResult;
+use crate::rbt_err::RbtError;
 use nalgebra::Vector2;
+use pnp::solve_pnp;
+use rerun::Vec3D;
+
+mod pnp;
 
 #[derive(Debug)]
-enum RobotClass {
+enum RbtClass {
     // Hero,
     Engineer,
     // Infantry,
@@ -19,26 +23,25 @@ enum RobotClass {
 }
 
 #[derive(Debug)]
-pub struct RobotMsg {
-    _class: RobotClass,
+pub struct RbtMsg {
+    _class: RbtClass,
 }
 
-impl RobotMsg {
-    fn new(class: RobotClass) -> RobotMsg {
-        RobotMsg { _class: class }
+impl RbtMsg {
+    fn new(class: RbtClass) -> RbtMsg {
+        RbtMsg { _class: class }
     }
 }
 
 #[allow(dead_code)]
 #[derive(Debug)]
-pub struct RobotSolver {
+pub struct RbtSolver {
     armors: Vec<ArmorStaticMsg>,
-    robot_msg: RobotMsg,
 }
 
-impl RobotSolver {
+impl RbtSolver {
     // 根据 ArmorStaticMsg, 构建 RobotSolver
-    pub fn from_armors(armors: Vec<ArmorStaticMsg>) -> Result<Self, RbtError> {
+    pub fn new() -> Result<Self, RbtError> {
         // // let center = armors.center();
         // let left_top = armors.left_top();
         // let right_top = armors.right_top();
@@ -53,6 +56,20 @@ impl RobotSolver {
         // let x = (distance_left + distance_right) / 2.0;
         // let y = (left_top.1 + right_top.1 + left_bottom.1 + right_bottom.1) as f64 / 4.0;
 
+        // // 融合数据，构建整车模型
+        // let rbt_center = 5000.0; // 车体中心
+        // let rbt_armors_hit_msg = Vec::<(f64, f64)>::with_capacity(4); // 四块装甲板中心的Z轴高度和距离车体中心的角度
+        // let rbt_armors_angle = 0.0f64; // 0.0对应正对（选板需更新）
+
+        Ok(RbtSolver { armors: vec![] })
+    }
+
+    pub fn solve_pnp(
+        &mut self,
+        dbg: &Option<rerun::RecordingStream>,
+        armors: Vec<ArmorStaticMsg>,
+    ) -> Result<Vec<PnpResult>, RbtError> {
+        let mut results = vec![];
         // pnp solver
         for armor in armors.iter() {
             let image_points: Vec<Vector2<f64>> = vec![
@@ -62,22 +79,29 @@ impl RobotSolver {
                 Vector2::new(armor.right_top().x(), armor.right_top().y()),
             ];
 
-            let result = solve_pnp(image_points);
-            tracing::info!("Result {:?}", result);
+            tracing::debug!("image points {:?}", image_points);
+
+            results.push(solve_pnp(image_points).unwrap()); // todo: convert argmin error to RbtError
         }
 
-        // // 融合数据，构建整车模型
-        // let rbt_center = 5000.0; // 车体中心
-        // let rbt_armors_hit_msg = Vec::<(f64, f64)>::with_capacity(4); // 四块装甲板中心的Z轴高度和距离车体中心的角度
-        // let rbt_armors_angle = 0.0f64; // 0.0对应正对（选板需更新）
+        if let Some(rec) = dbg {
+            for (idx, result) in results.iter().enumerate() {
+                rec.log(
+                    "armor/rbt_solver",
+                    &rerun::Points3D::new([result.point_3d()]),
+                )?;
+                rec.log(
+                    format!("armor/rbt_solver_armor_{}", idx),
+                    &rerun::Arrows3D::from_vectors([Vec3D::new(
+                        1000.0 * f32::sin(15.0) * (result.world_yaw().cos() as f32),
+                        1000.0 * f32::sin(15.0) * (result.world_yaw().sin() as f32),
+                        1000.0 * f32::cos(15.0),
+                    )])
+                    .with_origins([result.point_3d()]),
+                )?;
+            }
+        }
 
-        Ok(RobotSolver {
-            armors,
-            robot_msg: RobotMsg::new(RobotClass::Engineer),
-        })
-    }
-
-    pub fn armor(&self) -> &RobotMsg {
-        &self.robot_msg
+        Ok(results)
     }
 }
