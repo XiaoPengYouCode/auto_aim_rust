@@ -1,3 +1,5 @@
+#![allow(unused)]
+
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio_serial::{SerialPortBuilderExt, SerialStream};
 

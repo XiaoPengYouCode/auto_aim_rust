@@ -1,5 +1,26 @@
-armor_detect_model_path = "./model/armor/best_fp16.onnx"
+# robot_config.toml
+
+[logger_cfg]
+terminal_log_filter = "info,auto_aim_rust=debug,ort=warn"
+file_log_filter = "info,auto_aim_rust=debug,ort=info"
+console_log_enable = true
+file_log_enable = true
+
+[general_cfg]
+img_dbg = false
+bullet_speed = 24.0
+
+[detector_cfg]
+armor_detect_model_path = "./model/armor/best_fp16_norm.onnx"
 armor_detect_engine_path = "./model/armor"
-buff_detect_model_path = "./model/armor/buff.onnx"
-log_filter = "debug,ort=warn"
-img_dbg_open = false
+buff_detect_model_path = "./model/buff/buff.onnx"
+camera_img_width = 1280
+camera_img_height = 720
+infer_img_width = 640
+infer_img_height = 360
+infer_full_height = 480
+confidence_threshold = 0.8
+ort_ep = "OpenVINO"
+
+[camera_cfg]
+camera_matrix = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]

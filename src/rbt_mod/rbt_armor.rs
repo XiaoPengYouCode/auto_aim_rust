@@ -1,55 +1,28 @@
-// #include <opencv2/opencv.hpp>
-// #include <eigen3/Eigen/Eigen>
-// #include <memory>
-// #include <string>
-// //#include <map>
-// use nalgebra::{self as na, zero};
-// use opencv as cv;
-//
-// use cv::core::CV_PI;
+#![allow(unused)]
 
-use image::{ImageBuffer, Rgba};
+use nalgebra as na;
+use tracing::error;
 
-pub const ARMOR_LIGHT_BAR_SIZE: f64 = 10.0;
-
-#[derive(Debug, Copy, Clone)]
-pub struct ImgCoordinate(f64, f64);
-
-impl ImgCoordinate {
-    pub fn to_f32(&self) -> (f32, f32) {
-        (self.0 as f32, self.1 as f32)
-    }
-
-    pub fn from_f32(x: f32, y: f32) -> Self {
-        Self(x as f64, y as f64)
-    }
-
-    pub fn x(&self) -> f64 {
-        self.0
-    }
-    pub fn y(&self) -> f64 {
-        self.1
-    }
-}
+use crate::rbt_err::{RbtError, RbtResult};
+use crate::rbt_mod::rbt_generic::ImgCoord;
 
 #[derive(Debug, Clone)]
 pub struct ArmorStaticMsg {
-    center: ImgCoordinate,
-    left_top: ImgCoordinate,
-    left_bottom: ImgCoordinate,
-    right_bottom: ImgCoordinate,
-    right_top: ImgCoordinate,
-    image: ImageBuffer<Rgba<u8>, Vec<u8>>,
+    center: ImgCoord,
+    left_top: ImgCoord,
+    left_bottom: ImgCoord,
+    right_bottom: ImgCoord,
+    right_top: ImgCoord,
 }
 
 impl ArmorStaticMsg {
     pub fn new(
-        center: ImgCoordinate,
-        left_top: ImgCoordinate,
-        left_bottom: ImgCoordinate,
-        right_bottom: ImgCoordinate,
-        right_top: ImgCoordinate,
-        image: ImageBuffer<Rgba<u8>, Vec<u8>>,
+        center: ImgCoord,
+        left_top: ImgCoord,
+        left_bottom: ImgCoord,
+        right_bottom: ImgCoord,
+        right_top: ImgCoord,
+        // image: ImageBuffer<Rgba<u8>, Vec<u8>>,
     ) -> Self {
         ArmorStaticMsg {
             center,
@@ -57,59 +30,171 @@ impl ArmorStaticMsg {
             right_top,
             left_bottom,
             right_bottom,
-            image,
+            // image,
         }
     }
 
-    pub fn center(&self) -> ImgCoordinate {
+    pub fn center(&self) -> ImgCoord {
         self.center
     }
 
-    pub fn left_top(&self) -> ImgCoordinate {
+    pub fn left_top(&self) -> ImgCoord {
         self.left_top
     }
 
-    pub fn right_top(&self) -> ImgCoordinate {
+    pub fn right_top(&self) -> ImgCoord {
         self.right_top
     }
 
-    pub fn left_bottom(&self) -> ImgCoordinate {
+    pub fn left_bottom(&self) -> ImgCoord {
         self.left_bottom
     }
 
-    pub fn right_bottom(&self) -> ImgCoordinate {
+    pub fn right_bottom(&self) -> ImgCoord {
         self.right_bottom
     }
 
-    pub fn corner_points(&self) -> Vec<ImgCoordinate> {
+    pub fn corner_points(&self) -> Vec<ImgCoord> {
         vec![
             self.left_top,
-            self.right_top,
-            self.right_bottom,
             self.left_bottom,
+            self.right_bottom,
+            self.right_top,
         ]
     }
 
-    pub fn image(&self) -> &ImageBuffer<Rgba<u8>, Vec<u8>> {
-        &self.image
+    // pub fn image(&self) -> &ImageBuffer<Rgba<u8>, Vec<u8>> {
+    //     &self.image
+    // }
+
+    pub fn corner_points_na(&self) -> Vec<na::Vector2<f64>> {
+        self.corner_points()
+            .iter()
+            .map(|p| na::Vector2::new(p.x(), p.y()))
+            .collect()
+    }
+
+    pub fn fmt(&self) -> String {
+        self.center().x().to_string()
     }
 }
 
-// const OUTPOST_ROTATE_RL: f64 = 553.0;
-// 目标运动模式，用于辅助响应
-pub enum MovementMethod {
-    Static(Vec<ArmorStaticMsg>), // 静止状态
-    Trans,                       // 横移
-    Spin,                        // 旋转
-    TransSpin,                   // 平移+旋转
+#[derive(Debug)]
+pub enum ArmorClass {
+    Red(u8),
+    Blue(u8),
 }
 
-// enum ArmorColor {
-//     Red,
-//     Blue,
-//     Gray,   // 熄灭灯条
-//     Purple, // 无敌灯条
-// }
+impl ArmorClass {
+    pub fn from_yolo_output_idx(idx: usize) -> RbtResult<Self> {
+        match idx {
+            0..=17 => Ok(Self::Blue((idx) as u8)),
+            18..=35 => Ok(Self::Red((idx - 17) as u8)),
+            _ => {
+                error!("Invalid armor class index: {}", idx);
+                Err(RbtError::InvalidArmorClassIndex(idx))
+            }
+        }
+    }
+
+    fn armor_color(&self) -> ArmorColor {
+        match self {
+            ArmorClass::Blue(_) => ArmorColor::Blue,
+            ArmorClass::Red(_) => ArmorColor::Red,
+        }
+    }
+
+    fn armor_type(&self) -> ArmorType {
+        match self {
+            ArmorClass::Blue(idx) | ArmorClass::Red(idx) => {
+                if *idx == 1 {
+                    ArmorType::Large
+                } else {
+                    ArmorType::Small
+                }
+            }
+        }
+    }
+}
+
+impl std::fmt::Display for ArmorClass {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ArmorClass::Blue(u8) => write!(f, "Blue{}", u8),
+            ArmorClass::Red(u8) => write!(f, "Red{}", u8),
+        }
+    }
+}
+
+pub struct ArmorPointMsg {
+    center: ImgCoord,
+    left_top: ImgCoord,
+    left_bottom: ImgCoord,
+    right_bottom: ImgCoord,
+    right_top: ImgCoord,
+}
+
+impl ArmorPointMsg {
+    pub fn new(
+        center: ImgCoord,
+        left_top: ImgCoord,
+        left_bottom: ImgCoord,
+        right_bottom: ImgCoord,
+        right_top: ImgCoord,
+    ) -> Self {
+        ArmorPointMsg {
+            center,
+            left_top,
+            right_top,
+            left_bottom,
+            right_bottom,
+        }
+    }
+
+    pub fn from_vec(coords: Vec<ImgCoord>) -> Self {
+        Self {
+            center: coords[0],
+            left_top: coords[1],
+            right_top: coords[2],
+            left_bottom: coords[3],
+            right_bottom: coords[4],
+        }
+    }
+
+    pub fn center(&self) -> ImgCoord {
+        self.center
+    }
+
+    pub fn left_top(&self) -> ImgCoord {
+        self.left_top
+    }
+
+    pub fn right_top(&self) -> ImgCoord {
+        self.right_top
+    }
+
+    pub fn left_bottom(&self) -> ImgCoord {
+        self.left_bottom
+    }
+
+    pub fn right_bottom(&self) -> ImgCoord {
+        self.right_bottom
+    }
+}
+
+pub struct ArmorRaceMsg {
+    armor_class: ArmorClass,
+}
+
+pub enum ArmorColor {
+    Red,
+    Blue,
+}
+
+enum ArmorType {
+    Small,
+    Large,
+}
 
 // impl std::fmt::Display for ArmorColor {
 //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -120,25 +205,6 @@ pub enum MovementMethod {
 //             Self::Purple => f.write_str("Purple"),
 //         }
 //     }
-// }
-
-// const D2R: f64 = CV_PI / 180.0;
-// const R2D: f64 = 180.0 / CV_PI;
-
-// struct AngleWithTime {
-//     angle: f64, // 角度
-//     t: f64,     // 秒
-// }
-
-// struct PosWithTime {
-//     pos: na::Vector3<f64>, // 三维坐标/m
-//     t: f64,                // 时间戳/秒
-// }
-
-// enum ArmorType {
-//     Small,
-//     Large,
-//     Invalid,
 // }
 
 // impl std::fmt::Display for ArmorType {

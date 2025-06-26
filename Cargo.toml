@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 nalgebra = "0.33.2"
-ort = { path = "../../ort-main", features = ["ndarray", "cuda", "tensorrt", "half"] }
+ort = { version = "2.0.0-rc.10", features = ["tensorrt", "openvino"] }
 thiserror = "2.0.12"
 image = "0.25.6"
 tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
@@ -16,21 +16,28 @@ toml = "0.8.22"
 serde = { version = "1.0.219", features = ["derive"] }
 tokio = { version = "1.45.1", features = ["full"] }
 argmin = "0.10.0"
-half = "2.6.0"
 argmin-math = { version = "0.4.0", features = ["vec"] }
 tokio-serial = "5.4.5"
-
-[[bin]]
-name = "test_error"
-path = "bin/test_error.rs"
+tracing-appender = "0.2.3"
+chrono = "0.4.41"
+crossbeam-queue = "0.3.12"
+lazy_static = "1.5.0"
 
 [[bin]]
 name = "test_serial"
 path = "bin/test_serial.rs"
 
 [[bin]]
-name = "test_single_thread"
-path = "bin/test_single_thread.rs"
+name = "auto_aim"
+path = "bin/auto_aim.rs"
+
+[[bin]]
+name = "auto_aim_async"
+path = "bin/auto_aim_async.rs"
+
+[[bin]]
+name = "sqpnp_benchmark"
+path = "bin/sqpnp_benchmark.rs"
 
 [profile.release]
 opt-level = 3
