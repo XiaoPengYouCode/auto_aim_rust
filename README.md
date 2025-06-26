@@ -1,9 +1,11 @@
-# 🤖 RoboMaster 3SE 战队自瞄
 
 <p align="center">
-  <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge"/>
-  <img src="https://img.shields.io/badge/Platform-RoboMaster-blue?style=for-the-badge"/>
-  <img src="https://img.shields.io/badge/SEU-3SE%20Team-red?style=for-the-badge"/>
+  <h1 align="center">🤖 一次对自瞄的尝试 🎯</h1>
+  <p align="center">
+    <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge"/>
+    <img src="https://img.shields.io/badge/Platform-RoboMaster-blue?style=for-the-badge"/>
+    <img src="https://img.shields.io/badge/SEU-3SE%20Team-red?style=for-the-badge"/> 
+  </p>
 </p>
 
 🚀 面向 RoboMaster 赛场的高性能自瞄
@@ -21,48 +23,6 @@
 - 📡 **毫无技术力的异步消息通信队列**：基于 tokio 构建的高性能事件系统
 - 🏆 **面向比赛优化**：针对 RoboMaster 赛场需求深度定制，兼顾实时性与可靠性
 - 🏗️ **基础设施完善**：结构化日志（tracing）与错误处理（thiserror）高度成熟，保障系统健壮高效
-
----
-
-## 🧱 项目结构一览
-
-```text
-src/
-├── lib.rs                 # 顶层 crate 入口
-├── rbt_app/               # 启动器，支持多线程与单线程模式
-│   ├── multi_threads.rs
-│   └── single_thread.rs
-├── rbt_base/              # 底层数据结构、数学库、相机模型、姿态估计
-│   ├── rbt_cam.rs
-│   ├── rbt_frame.rs
-│   ├── rbt_geometry/
-│   │   ├── rbt_coord.rs
-│   │   └── rbt_rigid.rs
-│   ├── rbt_math/
-│   │   ├── eskf.rs
-│   │   ├── sqpnp/
-│   │   │   ├── sqpnp_def.rs
-│   │   │   └── sqpnp_impl.rs
-│   │   └── sqpnp.rs
-├── rbt_infra/             # 基础设施配置、日志、异步队列、工具函数
-│   ├── rbt_cfg.rs
-│   ├── rbt_log.rs
-│   ├── rbt_queue_async.rs
-│   └── rbt_utils.rs
-├── rbt_mod/               # 功能模块：检测、估计、控制、通讯等
-│   ├── rbt_armor.rs
-│   ├── rbt_comm.rs
-│   ├── rbt_ctrl/
-│   │   └── armor_select.rs
-│   ├── rbt_detector/
-│   │   └── rbt_detect_proc.rs
-│   ├── rbt_estimator/
-│   │   ├── armor_model.rs
-│   │   └── enemy_model.rs
-│   ├── rbt_solver/
-│   └── rbt_threads.rs
-```
-
 ---
 
 ## 📡 核心模块简介
@@ -89,8 +49,6 @@ src/
 cargo build --release
 cargo run --bin auto_aim_async
 ```
-
----
 
 <p align="center">
   <img src="assets/3se-logo.png" width="150" alt="3SE Logo"/>
