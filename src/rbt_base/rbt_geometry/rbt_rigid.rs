@@ -1,3 +1,4 @@
+/// todo!("要不要考虑分离 position 和 orientation")
 pub struct RbtRigidPose {
     isometry: na::Isometry3<f64>,
 }

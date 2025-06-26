@@ -1,5 +1,6 @@
 extern crate nalgebra as na;
 
+// base
 #[derive(Debug, Clone)]
 pub struct RbtImgPoint2 {
     point: na::Point2<f64>,

@@ -76,7 +76,7 @@ pub fn infer(
             }
             if let Some(mut frame) = pre_infer_queue.pop().await {
                 info!(
-                    "infer: Frame ID {} received for processing, time used: {:?}",
+                    "infer: Frame ID {} received form processing, time used: {:?}",
                     frame.id(),
                     frame.time_used()
                 );

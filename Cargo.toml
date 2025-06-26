@@ -39,5 +39,9 @@ path = "bin/auto_aim_async.rs"
 name = "sqpnp_benchmark"
 path = "bin/sqpnp_benchmark.rs"
 
+[[bin]]
+name = "test_coord"
+path = "bin/test_coord.rs"
+
 [profile.release]
 opt-level = 3
