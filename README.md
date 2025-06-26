@@ -47,7 +47,7 @@
 
 ```bash
 cargo build --release
-cargo run --bin auto_aim_async
+cargo run --bin auto_aim_async --release
 ```
 
 <p align="center">
