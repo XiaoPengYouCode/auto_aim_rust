@@ -32,12 +32,16 @@ impl PnpSolver {
                 solution[0].num_iterations = 0;
                 self.handle_solution(&mut solution[0], &mut min_sq_error);
             } else {
-                (self.nearest_rotation_matrix)(&e, &mut solution[0].r);
+                self.parameters
+                    .nearest_rotation_method
+                    .nearest_rotation_matrix(&e, &mut solution[0].r);
                 solution[0] = self.run_sqp(&solution[0].r);
                 solution[0].t = self.p * solution[0].r_hat.clone();
                 self.handle_solution(&mut solution[0], &mut min_sq_error);
 
-                (self.nearest_rotation_matrix)(&(-e), &mut solution[1].r);
+                self.parameters
+                    .nearest_rotation_method
+                    .nearest_rotation_matrix(&(-e), &mut solution[1].r);
                 solution[1] = self.run_sqp(&solution[1].r);
                 solution[1].t = self.p * solution[1].r_hat.clone();
                 self.handle_solution(&mut solution[1], &mut min_sq_error);
@@ -50,12 +54,16 @@ impl PnpSolver {
             let e = self.u.column(index as usize).clone_owned();
             let mut solution = [SQPSolution::default(), SQPSolution::default()];
 
-            (self.nearest_rotation_matrix)(&e, &mut solution[0].r);
+            self.parameters
+                .nearest_rotation_method
+                .nearest_rotation_matrix(&e, &mut solution[0].r);
             solution[0] = self.run_sqp(&solution[0].r);
             solution[0].t = self.p * solution[0].r_hat.clone();
             self.handle_solution(&mut solution[0], &mut min_sq_error);
 
-            (self.nearest_rotation_matrix)(&(-e), &mut solution[1].r);
+            self.parameters
+                .nearest_rotation_method
+                .nearest_rotation_matrix(&(-e), &mut solution[1].r);
             solution[1] = self.run_sqp(&solution[1].r);
             solution[1].t = self.p * solution[1].r_hat.clone();
             self.handle_solution(&mut solution[1], &mut min_sq_error);
@@ -101,7 +109,9 @@ impl PnpSolver {
 
         if det_r > self.parameters.sqp_det_threshold {
             // 使用函数指针计算结果
-            (self.nearest_rotation_matrix)(&solution.r, &mut solution.r_hat);
+            self.parameters
+                .nearest_rotation_method
+                .nearest_rotation_matrix(&solution.r, &mut solution.r_hat);
         } else {
             solution.r_hat = solution.r.clone();
         }
@@ -189,6 +199,7 @@ impl PnpSolver {
                 if *min_sq_error > solution.sq_error {
                     *min_sq_error = solution.sq_error;
                     // self.solutions[0] = solution.clone();
+                    self.solutions.clear();
                     self.solutions.push(solution.clone());
                     self.num_solutions = 1;
                 }
@@ -329,11 +340,14 @@ impl PnpSolver {
     pub fn nearest_rotation_matrix_svd(e: &na::SVector<f64, 9>, r: &mut na::SVector<f64, 9>) {
         let e_matrix = na::SMatrix::<f64, 3, 3>::from_column_slice(e.as_slice());
         let svd = e_matrix.svd(true, true);
-        let det_uv = svd.u.unwrap().determinant() * svd.v_t.unwrap().transpose().determinant();
-        let r_matrix = svd.u.unwrap()
-            * na::SMatrix::<f64, 3, 3>::from_diagonal(&na::Vector3::new(1.0, 1.0, det_uv))
-            * svd.v_t.unwrap();
-        *r = na::SVector::<f64, 9>::from_row_slice(r_matrix.as_slice());
+        let u = svd.u.unwrap();
+        let v_t = svd.v_t.unwrap();
+        let v = v_t.transpose();
+
+        let det_uv = u.determinant() * v.determinant();
+        let s = na::SMatrix::<f64, 3, 3>::from_diagonal(&na::Vector3::new(1.0, 1.0, det_uv));
+        let r_matrix = u * s * v_t;
+        *r = na::SVector::<f64, 9>::from_column_slice(r_matrix.as_slice());
     }
 
     // Faster nearest rotation computation based on FOAM.
@@ -511,6 +525,10 @@ impl PnpSolver {
         // Applying Gram-Schmidt orthogonalization on the Jacobian.
         // The steps are fixed here to take advantage of the sparse form of the matrix
         //
+        tracing::info!("r = {}", r);
+        tracing::info!("h = {}", h);
+        tracing::info!("n = {}", n);
+        tracing::info!("k = {}", k);
         *h = na::SMatrix::<f64, 9, 6>::zeros();
 
         // 1. q1
@@ -527,6 +545,7 @@ impl PnpSolver {
         h[(3, 1)] = r[3] * inv_norm_r2;
         h[(4, 1)] = r[4] * inv_norm_r2;
         h[(5, 1)] = r[5] * inv_norm_r2;
+        k[(1, 0)] = 0.0;
         k[(1, 1)] = 2.0 * norm_r2;
 
         // 3. q3
@@ -535,6 +554,8 @@ impl PnpSolver {
         h[(6, 2)] = r[6] * inv_norm_r3;
         h[(7, 2)] = r[7] * inv_norm_r3;
         h[(8, 2)] = r[8] * inv_norm_r3;
+        k[(2, 0)] = 0.0;
+        k[(2, 1)] = 0.0;
         k[(2, 2)] = 2.0 * norm_r3;
 
         // 4. q4
@@ -565,6 +586,7 @@ impl PnpSolver {
 
         k[(3, 0)] = r[3] * h[(0, 0)] + r[4] * h[(1, 0)] + r[5] * h[(2, 0)];
         k[(3, 1)] = r[0] * h[(3, 1)] + r[1] * h[(4, 1)] + r[2] * h[(5, 1)];
+        k[(3, 2)] = 0.0;
         k[(3, 3)] = r[3] * h[(0, 3)]
             + r[4] * h[(1, 3)]
             + r[5] * h[(2, 3)]
@@ -589,6 +611,7 @@ impl PnpSolver {
 
         let _ = h.column_mut(4).normalize();
 
+        k[(4, 0)] = 0.0;
         k[(4, 1)] = r[6] * h[(3, 1)] + r[7] * h[(4, 1)] + r[8] * h[(5, 1)];
         k[(4, 2)] = r[3] * h[(6, 2)] + r[4] * h[(7, 2)] + r[5] * h[(8, 2)];
         k[(4, 3)] = r[6] * h[(3, 3)] + r[7] * h[(4, 3)] + r[8] * h[(5, 3)];
@@ -625,6 +648,7 @@ impl PnpSolver {
         let _ = h.column_mut(5).normalize();
 
         k[(5, 0)] = r[6] * h[(0, 0)] + r[7] * h[(1, 0)] + r[8] * h[(2, 0)];
+        k[(5, 1)] = 0.0;
         k[(5, 2)] = r[0] * h[(6, 2)] + r[1] * h[(7, 2)] + r[2] * h[(8, 2)];
         k[(5, 3)] = r[6] * h[(0, 3)] + r[7] * h[(1, 3)] + r[8] * h[(2, 3)];
         k[(5, 4)] = r[6] * h[(0, 4)]
@@ -652,7 +676,7 @@ impl PnpSolver {
         let mut index2: i32 = -1;
         let mut index3: i32 = -1;
 
-        let mut max_norm1 = f64::MIN;
+        let mut max_norm1 = f64::MIN_POSITIVE;
         let mut min_dot12 = f64::MAX;
         let mut min_dot1323 = f64::MAX;
 
@@ -695,7 +719,7 @@ impl PnpSolver {
                 let inv_norm = 1.0 / col_norms[i];
                 let cos_v1_x_col = (pn.column(i).dot(&v1) * inv_norm).abs();
                 let cos_v2_x_col = (pn.column(i).dot(&v2) * inv_norm).abs();
-                if cos_v1_x_col + cos_v2_x_col <= min_dot1323 {
+                if (cos_v1_x_col + cos_v2_x_col) <= min_dot1323 {
                     index3 = i as i32;
                     min_dot1323 = cos_v1_x_col + cos_v2_x_col;
                 }

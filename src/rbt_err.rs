@@ -37,6 +37,18 @@ pub enum RbtError {
 
     #[error("Unsupported execution provider: {0}")]
     UnsupportedExecutionProvider(String),
+
+    #[error("Invalid config: {0}")]
+    InvalidConfig(String),
 }
 
 pub type RbtResult<T> = Result<T, RbtError>;
+
+#[macro_export]
+macro_rules! rbt_bail_error {
+    ($err: expr) => {
+        let e = $err;
+        tracing::error!("{}", $err);
+        return Err(e.into());
+    };
+}

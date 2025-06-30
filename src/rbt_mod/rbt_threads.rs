@@ -14,6 +14,8 @@ use crate::rbt_mod::rbt_generic::ImgCoord;
 use crate::rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING};
 use crate::rbt_infra::rbt_queue_async::RbtQueueAsync;
 
+pub mod rbt_cfg_thread;
+
 /// 图像预处理阶段：读取图像并通过通道发送到下一阶段。
 /// 此函数负责读取图像、调整图像大小、转换为归一化格式，并为推理阶段准备数据。
 pub fn pre_process(queue: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()> {

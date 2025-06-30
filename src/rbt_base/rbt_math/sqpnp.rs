@@ -1,9 +1,10 @@
 pub mod sqpnp_def;
 pub mod sqpnp_impl;
 
+use tracing::error;
+use sqpnp_def::OmegaNullspaceMethod;
 use sqpnp_def::SQPSolution;
 use sqpnp_def::SolverParameters;
-use sqpnp_def::{NearestRotationMethod, OmegaNullspaceMethod};
 use sqpnp_def::{Point, Projection};
 
 pub struct PnpSolver {
@@ -22,8 +23,6 @@ pub struct PnpSolver {
 
     pub solutions: Vec<SQPSolution>,
     pub num_solutions: i32,
-
-    pub nearest_rotation_matrix: fn(&na::SVector<f64, 9>, &mut na::SVector<f64, 9>),
 }
 
 impl Default for PnpSolver {
@@ -41,7 +40,6 @@ impl Default for PnpSolver {
             num_null_vectors: 0,
             solutions: Vec::with_capacity(18),
             num_solutions: 0,
-            nearest_rotation_matrix: |_, _| {},
         }
     }
 }
@@ -57,6 +55,12 @@ impl PnpSolver {
         let mut solver = PnpSolver::default();
 
         let n = points_3d.len();
+        let n_projections = projections.len();
+
+        if n != n_projections {
+            error!("Number of projections does not match number of points: points_num {} != projection_num {}", n, projections.len());
+            return Err("Number of projections does not match number of points".into());
+        }
 
         if n != projections.len() || n < 3 {
             return Err("Number of points and projections must match and be at least 3".into());
@@ -257,9 +261,10 @@ impl PnpSolver {
         q[(2, 2)] = sum_wx2_plus_wy2;
 
         let q_inv = q.try_inverse().ok_or("Matrix inversion failed")?;
-        solver.p = -q_inv * qa;
-        solver.omega += qa.transpose() * solver.p;
+        solver.p = -q_inv * qa; // t = p * r
+        solver.omega += qa.transpose() * solver.p; // final omega
 
+        // find candidate solution
         let (u, s) = match solver.parameters.omega_nullspace_method {
             OmegaNullspaceMethod::RRQR | OmegaNullspaceMethod::CPRRQR => {
                 // nalgebra没有全主元QR分解的实现，使用ColPivQR代替
@@ -267,7 +272,7 @@ impl PnpSolver {
                 (rrqr.q().clone_owned(), rrqr.r().diagonal().to_owned())
             }
             OmegaNullspaceMethod::SVD => {
-                let svd = solver.omega.svd(true, true);
+                let svd = solver.omega.svd(true, false); // 只需要计算完整的U，不需要计算V
                 (svd.u.unwrap(), svd.singular_values)
             }
         };
@@ -288,16 +293,11 @@ impl PnpSolver {
         let inv_sum_w = 1.0 / sum_w;
         solver.point_mean = na::Vector3::new(sum_w_x, sum_w_y, sum_w_z) * inv_sum_w;
 
-        solver.nearest_rotation_matrix = match solver.parameters.nearest_rotation_method {
-            NearestRotationMethod::FOAM => Self::nearest_rotation_matrix_foam,
-            NearestRotationMethod::SVD => Self::nearest_rotation_matrix_svd,
-        };
+        // solver.nearest_rotation_matrix = match solver.parameters.nearest_rotation_method {
+        //     NearestRotationMethod::FOAM => Self::nearest_rotation_matrix_foam,
+        //     NearestRotationMethod::SVD => Self::nearest_rotation_matrix_svd,
+        // };
 
-        // println!("omega matrix:");
-        // println!("{}", solver.omega);
-
-        // println!("u matrix:");
-        // println!("{}", solver.u);
         Ok(solver)
     }
 

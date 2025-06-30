@@ -1,3 +1,5 @@
+use super::PnpSolver;
+
 const DEFAULT_RANK_TOLERANCE: f64 = 1e-7;
 const DEFAULT_SQP_SQUARED_TOLERANCE: f64 = 1e-10;
 const DEFAULT_SQP_DET_THRESHOLD: f64 = 1.001;
@@ -21,6 +23,19 @@ impl Default for OmegaNullspaceMethod {
 pub enum NearestRotationMethod {
     FOAM,
     SVD,
+}
+
+impl NearestRotationMethod {
+    pub fn nearest_rotation_matrix(&self, e: &na::SVector<f64, 9>, r: &mut na::SVector<f64, 9>) {
+        match self {
+            Self::FOAM => {
+                PnpSolver::nearest_rotation_matrix_svd(e, r);
+            }
+            Self::SVD => {
+                PnpSolver::nearest_rotation_matrix_svd(e, r);
+            }
+        }
+    }
 }
 
 impl Default for NearestRotationMethod {
