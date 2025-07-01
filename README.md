@@ -45,7 +45,7 @@
 ### 🚀 快速运行
 
 ```bash
-cargo build -p lib --release
+cargo build --release
 cargo run -p auto_aim_async --release
 ```
 
