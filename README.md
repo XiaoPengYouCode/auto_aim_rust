@@ -1,11 +1,12 @@
-<p align="center">
-  <h1 align="center">🤖 一次对自瞄的尝试 🎯</h1>
-  <p align="center">
-    <img src="https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge"/ alt="language=rust">
-    <img src="https://img.shields.io/badge/Platform-RoboMaster-blue?style=for-the-badge"/ alt="platform=robomaster">
-    <img src="https://img.shields.io/badge/Team-3SE-orange?style=for-the-badge"/ alt="team=3SE">
-  </p>
-</p>
+<div align="center">
+  <h1>🤖 自 瞄 🎯</h1>
+</div>
+
+[![Language: Rust](https://img.shields.io/badge/Language-Rust-orange?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/ "Rust官方")
+[![Platform: RoboMaster](https://img.shields.io/badge/Platform-RoboMaster-blue?style=for-the-badge&logo=robot&logoColor=white)](https://www.robomaster.com/zh-CN/ "RoboMaster官网")
+[![Team: 3SE](https://img.shields.io/badge/Team-3SE-red?style=for-the-badge&logo=steam&logoColor=white)](https://space.bilibili.com/1911835891 "3SE战队B站")
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge&logo=opensourceinitiative&logoColor=white)](https://opensource.org/licenses/MIT "MIT协议")
+[![ONNX: ort-rs](https://img.shields.io/badge/ONNX-ort--rs-informational?style=for-the-badge&logo=onnx&logoColor=white)](https://github.com/pykeio/ort "Rust ONNX运行时")
 
 🚀 面向 RoboMaster 赛场的高性能自瞄
 
@@ -50,6 +51,9 @@ cargo run -p auto_aim_async --release
 ```
 
 <p align="center">
-  <img src="assets/3se-logo.png" width="150" alt="3SE Logo"/>
+  <img src="assets/3se-logo.png" width="150" alt="3SE Logo"/>&nbsp;&nbsp;&nbsp;
+  <img src="assets/robo-rust-logo.svg" width="130" alt="RoboRust Logo"/>
   <p align="center">❤️爱来自东南大学3SE战队❤️</p>
+</p>
+
 </p>
