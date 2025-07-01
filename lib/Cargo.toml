@@ -1,0 +1,24 @@
+[package]
+name = "lib"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+nalgebra = "0.33.2"
+ort = { version = "2.0.0-rc.10", features = ["tensorrt", "openvino"] }
+thiserror = "2.0.12"
+image = "0.25.6"
+tracing-subscriber = { version = "0.3.19", features = ["env-filter"] }
+tracing = "0.1.41"
+ndarray = "0.16.1"
+toml = "0.8.22"
+serde = { version = "1.0.219", features = ["derive"] }
+tokio = { version = "1.45.1", features = ["full"] }
+argmin = "0.10.0"
+argmin-math = { version = "0.4.0", features = ["vec"] }
+tokio-serial = "5.4.5"
+tracing-appender = "0.2.3"
+chrono = "0.4.41"
+crossbeam-queue = "0.3.12"
+lazy_static = "1.5.0"
+notify = "8.0.0"

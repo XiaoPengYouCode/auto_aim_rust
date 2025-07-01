@@ -5,7 +5,6 @@ use ort::{
     session::{Session, SessionOutputs},
     value::TensorRef,
 };
-use rerun::RecordingStream;
 use tracing::{error, info};
 
 use crate::rbt_infra::rbt_utils::img_dbg::BoundingBox;
@@ -159,38 +158,6 @@ impl ArmorDetector {
         }
         Ok(armors)
     }
-
-    fn img_dbg(
-        &self,
-        rec: &RecordingStream,
-        result: &[ArmorStaticMsg],
-    ) -> Result<(), rbt_err::RbtError> {
-        rec.log(
-            "img",
-            &rerun::Image::from_color_model_and_tensor(rerun::ColorModel::RGB, self.img.clone())
-                .unwrap(),
-        )?;
-
-        for (idx, armor) in result.iter().enumerate() {
-            rec.log(
-                format!("img/armor_{}_line", idx),
-                &rerun::LineStrips2D::new([
-                    [armor.left_top().to_f32(), armor.right_bottom().to_f32()],
-                    [armor.left_bottom().to_f32(), armor.right_top().to_f32()],
-                ])
-                .with_radii([1.0])
-                .with_colors([rerun::Color::from_rgb(255, 0, 0)]),
-            )?;
-
-            rec.log(
-                format!("img/armor_{}_center", idx),
-                &rerun::Points2D::new([armor.center().to_f32()])
-                    .with_radii([3.0])
-                    .with_colors([rerun::Color::from_rgb(200, 255, 0)]),
-            )?;
-        }
-        Ok(())
-    }
 }
 
 /// 不需要使用cudarc主动将数据拷贝，这个过程ort-rs会自己完成
@@ -207,7 +174,6 @@ impl ArmorDetector {
 /// TensorRT 10: FP16 2.5ms
 pub fn pipeline(
     cfg: &rbt_cfg::DetectorConfig,
-    _rec: &Option<RecordingStream>,
 ) -> Result<Vec<ArmorStaticMsg>, RbtError> {
     // build session
     let session_builder = Session::builder()?;
@@ -258,11 +224,6 @@ pub fn pipeline(
     let result = detector.post_process(&outputs)?;
     let elapsed = tim.elapsed();
     info!("Postprocessing time elapsed: {:?}", elapsed);
-
-    // debug
-    if let Some(rec) = _rec {
-        detector.img_dbg(rec, &result)?;
-    }
 
     Ok(result)
 }

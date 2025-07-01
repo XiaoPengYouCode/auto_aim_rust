@@ -28,16 +28,8 @@ impl RbtSingleThreadApp {
     }
 
     pub fn run(&self) -> RbtResult<()> {
-        // init img_debugger
-        let img_dbg = if self.rbt_cfg.general_cfg.img_dbg {
-            let rec = rerun::RecordingStreamBuilder::new("rerun_example_app").connect_grpc()?;
-            Some(rec)
-        } else {
-            None
-        };
-
         // armor detect using Yolo
-        let armors = rbt_detector::pipeline(&self.rbt_cfg.detector_cfg, &img_dbg)?;
+        let armors = rbt_detector::pipeline(&self.rbt_cfg.detector_cfg)?;
         info!("detect_armors_num: {}", armors.len());
         for armor in &armors {
             info!("armor: {:?}", armor);

@@ -85,6 +85,27 @@ pub enum ArmorClass {
     Blue(u8),
 }
 
+#[derive(Debug)]
+pub enum EnemyId {
+    Hero1,
+    Engineer2,
+    Infantry3,
+    Infantry4,
+    Sentry7,
+}
+
+impl EnemyId {
+    pub fn to_usize(&self) -> usize {
+        match self {
+            Self::Hero1 => 1_usize,
+            Self::Engineer2 => 2_usize,
+            Self::Infantry3 => 3_usize,
+            Self::Infantry4 => 4_usize,
+            Self::Sentry7 => 7_usize,
+        }
+    }
+}
+
 impl ArmorClass {
     pub fn from_yolo_output_idx(idx: usize) -> RbtResult<Self> {
         match idx {

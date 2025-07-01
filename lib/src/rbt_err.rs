@@ -14,9 +14,6 @@ pub enum RbtError {
     #[error("Ort error: {0}")]
     OrtError(#[from] ort::error::Error),
 
-    #[error("Rerun dbg error: {0}")]
-    RerunError(#[from] rerun::RecordingStreamError),
-
     #[error("Toml parse error: {0}")]
     TomlParseError(#[from] toml::de::Error),
 

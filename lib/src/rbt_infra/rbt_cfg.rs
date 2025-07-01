@@ -1,10 +1,10 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::rbt_err::{RbtError, RbtResult};
 use crate::rbt_bail_error;
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LoggerConfig {
     pub terminal_log_filter: String,
     pub file_log_filter: String,
@@ -12,14 +12,14 @@ pub struct LoggerConfig {
     pub file_log_enable: bool,
 }
 
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GeneralConfig {
     pub img_dbg: bool,
     pub bullet_speed: f64,
 }
 
 // 检测器相关配置
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct DetectorConfig {
     pub armor_detect_model_path: String,
     pub armor_detect_engine_path: String,
@@ -34,9 +34,15 @@ pub struct DetectorConfig {
 }
 
 // 相机相关配置
-#[derive(Deserialize, Debug, Clone, PartialEq)]
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct CameraConfig {
     camera_k: [f64; 9], // 设为私有，通过方法暴露
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct EstimatorConfig {
+    top1_activate_w: f64,
+    top2_activate_w: f64
 }
 
 impl CameraConfig {
