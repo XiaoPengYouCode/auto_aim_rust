@@ -1,21 +1,25 @@
-use notify::{recommended_watcher, Event, EventKind, RecursiveMode, Watcher};
-use tokio::sync::broadcast::Receiver;
-use std::path::Path;
-use tokio::sync::watch::Sender;
-use tracing::{info, error, warn};
-use tokio::sync::mpsc::channel;
-use tokio::time::{sleep, sleep_until, Duration, Instant};
-use tokio::task::JoinHandle;
+use notify::{Event, EventKind, RecursiveMode, Watcher, recommended_watcher};
 use std::future::Future;
-use std::pin::Pin;
 use std::future::pending;
+use std::path::Path;
+use std::pin::Pin;
+use tokio::sync::broadcast::Receiver;
+use tokio::sync::mpsc::channel;
+use tokio::sync::watch::Sender;
+use tokio::task::JoinHandle;
+use tokio::time::{Duration, Instant, sleep_until};
+use tracing::{error, info, warn};
 
-pub use crate::rbt_infra::rbt_cfg;
 pub use crate::rbt_err::RbtResult;
+pub use crate::rbt_infra::rbt_cfg;
 
 use self::rbt_cfg::RbtCfg;
 
-pub async fn rbt_cfg_thread(mut shutdown_rx: Receiver<()>, cfg_sender: Sender<RbtCfg>, init_cfg: RbtCfg) -> JoinHandle<RbtResult<()>> {
+pub async fn rbt_cfg_thread(
+    mut shutdown_rx: Receiver<()>,
+    cfg_sender: Sender<RbtCfg>,
+    init_cfg: RbtCfg,
+) -> JoinHandle<RbtResult<()>> {
     tokio::spawn(async move {
         let (event_tx, mut event_rx) = channel::<(Event, u64)>(10);
         let mut cfg_update_count = 0;
@@ -25,7 +29,9 @@ pub async fn rbt_cfg_thread(mut shutdown_rx: Receiver<()>, cfg_sender: Sender<Rb
             match res {
                 Ok(event) => {
                     event_counter += 1;
-                    if event.paths.iter().any(|p| p.ends_with("rbt_cfg.toml")) && matches!(event.kind, EventKind::Modify(_)) {
+                    if event.paths.iter().any(|p| p.ends_with("rbt_cfg.toml"))
+                        && matches!(event.kind, EventKind::Modify(_))
+                    {
                         // info!("Receive event: {:?}, counter:{}", event.kind, event_counter);
                         if event_tx.blocking_send((event, event_counter)).is_err() {
                             error!("Failed to send file watcher event throw channel 参数不会更新");
@@ -36,19 +42,24 @@ pub async fn rbt_cfg_thread(mut shutdown_rx: Receiver<()>, cfg_sender: Sender<Rb
                     error!("Something was wrong durning watching file(err: {})", e);
                 }
             }
-        }).unwrap();
+        })
+        .unwrap();
 
         // 这里需要监听整个目录，因为 vim 在修改文件过程中会创建一个新文件，然后把旧文件删除
-        if watcher.watch(Path::new("cfg/"), RecursiveMode::NonRecursive).is_err() {
+        if watcher
+            .watch(Path::new("cfg/"), RecursiveMode::NonRecursive)
+            .is_err()
+        {
             error!("Can't find config file");
         };
         let mut old_version_cfg = init_cfg;
         let mut debounce_deadline: Option<Instant> = None;
         let debounce_duration = Duration::from_millis(200);
         loop {
-            let debounce_future: Pin<Box<dyn Future<Output = ()> + Send>> = match debounce_deadline {
+            let debounce_future: Pin<Box<dyn Future<Output = ()> + Send>> = match debounce_deadline
+            {
                 Some(deadline) => Box::pin(sleep_until(deadline)),
-                None => Box::pin(pending())
+                None => Box::pin(pending()),
             };
             tokio::select! {
                 _ = shutdown_rx.recv() => {

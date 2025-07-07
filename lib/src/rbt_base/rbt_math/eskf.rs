@@ -95,10 +95,10 @@ pub trait EskfDynamic<const S_D: usize, const M_D: usize> {
     /// 根据输入更新名义状态
     fn update_nominal_state(
         &self,
-        nominal_state: &Self::NominalState,
+        nominal_state: &mut Self::NominalState, // 需要传入系统的状态变量可变引用
         dt: f64,
         u: &Self::Input,
-    ) -> Self::NominalState;
+    );
 
     /// 计算状态转移矩阵 F
     fn state_transition_matrix_f(

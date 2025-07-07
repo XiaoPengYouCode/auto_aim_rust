@@ -1,12 +1,12 @@
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-use crate::rbt_err::{RbtError, RbtResult};
 use crate::rbt_bail_error;
+use crate::rbt_err::{RbtError, RbtResult};
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LoggerConfig {
-    pub terminal_log_filter: String,
+    pub console_log_filter: String,
     pub file_log_filter: String,
     pub console_log_enable: bool,
     pub file_log_enable: bool,
@@ -42,7 +42,7 @@ pub struct CameraConfig {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct EstimatorConfig {
     top1_activate_w: f64,
-    top2_activate_w: f64
+    top2_activate_w: f64,
 }
 
 impl CameraConfig {
@@ -84,7 +84,9 @@ impl RbtCfg {
     // 参数正确性校验
     pub fn validation(&self) -> RbtResult<()> {
         if self.general_cfg.bullet_speed > 25.0 {
-            rbt_bail_error!(RbtError::InvalidConfig(format!("Bullet speed = {} > 25.0", self.general_cfg.bullet_speed).to_string()));
+            rbt_bail_error!(RbtError::InvalidConfig(
+                format!("Bullet speed = {} > 25.0", self.general_cfg.bullet_speed).to_string()
+            ));
         }
         Ok(())
     }
@@ -93,6 +95,32 @@ impl RbtCfg {
 impl Default for RbtCfg {
     fn default() -> Self {
         tracing::warn!("Failed to find cfg file, use default cfg instead");
-        RbtCfg { general_cfg: GeneralConfig { img_dbg: false, bullet_speed: 23.0 }, detector_cfg: DetectorConfig { armor_detect_model_path: "model/armor/best_fp16_norm.onnx".to_string(), armor_detect_engine_path: "/model/armor/".to_string(), buff_detect_model_path: "model/buff/best.onnx".to_string(), camera_img_width: 1280, camera_img_height: 720, infer_img_width: 640, infer_img_height: 360, infer_full_height: 384, confidence_threshold: 0.8, ort_ep: "OpenVINO".to_string() }, camera_cfg: CameraConfig { camera_k: [1800.0, 0.0, 320.0, 0.0, 1800.0, 162.0, 0.0, 0.0, 1.0] }, logger_cfg: LoggerConfig { terminal_log_filter: "info,ort=warn".to_string(), file_log_filter: "debug,ort=info".to_string(), console_log_enable: true, file_log_enable: true } }
+        RbtCfg {
+            general_cfg: GeneralConfig {
+                img_dbg: false,
+                bullet_speed: 23.0,
+            },
+            detector_cfg: DetectorConfig {
+                armor_detect_model_path: "model/armor/best_fp16_norm.onnx".to_string(),
+                armor_detect_engine_path: "/model/armor/".to_string(),
+                buff_detect_model_path: "model/buff/best.onnx".to_string(),
+                camera_img_width: 1280,
+                camera_img_height: 720,
+                infer_img_width: 640,
+                infer_img_height: 360,
+                infer_full_height: 384,
+                confidence_threshold: 0.8,
+                ort_ep: "OpenVINO".to_string(),
+            },
+            camera_cfg: CameraConfig {
+                camera_k: [1800.0, 0.0, 320.0, 0.0, 1800.0, 162.0, 0.0, 0.0, 1.0],
+            },
+            logger_cfg: LoggerConfig {
+                console_log_filter: "info,ort=warn".to_string(),
+                file_log_filter: "debug,ort=info".to_string(),
+                console_log_enable: true,
+                file_log_enable: true,
+            },
+        }
     }
 }

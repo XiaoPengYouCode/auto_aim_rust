@@ -87,14 +87,13 @@ impl EskfDynamic<6, 3> for ImuDynamic {
 
     fn update_nominal_state(
         &self,
-        nominal_state: &Self::NominalState,
+        nominal_state: &mut Self::NominalState,
         dt: f64,
         gyro: &Self::Input,
-    ) -> Self::NominalState {
+    ) {
         let rotation_increment = na::UnitQuaternion::from_scaled_axis(gyro * dt);
-        let nominal_q = nominal_state * rotation_increment;
-        let nominal_q = na::UnitQuaternion::new_normalize(nominal_q.into_inner());
-        nominal_q
+        *nominal_state *= rotation_increment;
+        *nominal_state = na::UnitQuaternion::new_normalize(nominal_state.into_inner());
     }
 
     fn state_transition_matrix_f(

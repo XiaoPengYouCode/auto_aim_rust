@@ -2,7 +2,7 @@
 /model/*
 /.idea
 /.vscode
-/logs/*
+/log/*
 
 # Added by cargo
 #

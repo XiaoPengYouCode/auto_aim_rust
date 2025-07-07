@@ -12,11 +12,10 @@ impl EskfDynamic<6, 3> for EnemyModel<3> {
 
     fn update_nominal_state(
         &self,
-        nominal_state: &Self::NominalState,
+        nominal_state: &mut Self::NominalState,
         dt: f64,
         u: &Self::Input,
-    ) -> Self::NominalState {
-        0.0f64
+    ) {
     }
 
     fn state_transition_matrix_f(

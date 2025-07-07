@@ -11,7 +11,8 @@ pub async fn logger_init() -> RbtResult<Option<tracing_appender::non_blocking::W
         return Ok(None);
     }
 
-    let terminal_log_filter = tracing_subscriber::EnvFilter::try_new(&logger_cfg.terminal_log_filter)?;
+    let terminal_log_filter =
+        tracing_subscriber::EnvFilter::try_new(&logger_cfg.console_log_filter)?;
     let file_log_filter = tracing_subscriber::EnvFilter::try_new(&logger_cfg.file_log_filter)?;
 
     let console_layer = if logger_cfg.console_log_enable {
@@ -30,12 +31,19 @@ pub async fn logger_init() -> RbtResult<Option<tracing_appender::non_blocking::W
         // 获取当前时间戳，用于生成唯一文件名
         let now = chrono::Local::now();
         let file_name = format!("{}", now.format("%H:%M:%S")); // 添加 .log 后缀
-        let directory_name = format!("logs/{}", now.format("%Y/%m/%d"));
+        let directory_name = format!("log/{}", now.format("%Y/%m/%d"));
         tokio::fs::create_dir_all(&directory_name).await?; // 确保目录存在
 
         let file_appender = tracing_appender::rolling::never(directory_name, file_name); // 使用 never
         let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        (Some(layer().with_writer(non_blocking).with_filter(file_log_filter)), Some(guard))
+        (
+            Some(
+                layer()
+                    .with_writer(non_blocking)
+                    .with_filter(file_log_filter),
+            ),
+            Some(guard),
+        )
     } else {
         (None, None)
     };
@@ -45,7 +53,10 @@ pub async fn logger_init() -> RbtResult<Option<tracing_appender::non_blocking::W
         .with(file_layer)
         .init();
 
-    info!("log initialized with filter: {}", logger_cfg.terminal_log_filter);
+    info!(
+        "log initialized with filter: {}",
+        logger_cfg.console_log_filter
+    );
     info!("log initialized with output:");
     info!(
         "file_log_enable: {}, console_log_enable: {}",

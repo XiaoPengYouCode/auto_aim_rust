@@ -1,7 +1,7 @@
 # robot_config.toml
 
 [logger_cfg]
-terminal_log_filter = "info,auto_aim_rust=debug,ort=warn"
+console_log_filter = "info,auto_aim_rust=debug,ort=warn"
 file_log_filter = "info,auto_aim_rust=debug,ort=info"
 console_log_enable = true
 file_log_enable = true

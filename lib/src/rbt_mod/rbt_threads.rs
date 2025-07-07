@@ -6,8 +6,8 @@ use tracing::{error, info, warn};
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
 use crate::rbt_base::rbt_frame::{RbtFrame, RbtFrameState};
-use crate::rbt_infra::rbt_utils::img_dbg::BoundingBox;
 use crate::rbt_mod::rbt_armor::ArmorStaticMsg;
+use crate::rbt_mod::rbt_detector::BBox;
 use crate::rbt_mod::rbt_detector::rbt_detect_proc::{letterbox, nms};
 use crate::rbt_mod::rbt_generic::ImgCoord;
 
@@ -166,13 +166,11 @@ pub async fn post_process(frame: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()>
                         let w = row[2]; // 检测框宽度
                         let h = row[3]; // 检测框高度
 
+                        let half_w = w / 2.0;
+                        let half_h = h / 2.0;
+
                         boxes.push((
-                            BoundingBox {
-                                x1: xc - w / 2.,
-                                y1: yc - h / 2.,
-                                x2: xc + w / 2.,
-                                y2: yc + h / 2.,
-                            },
+                            BBox::new(xc - half_w, yc - half_h, xc + half_w, yc + half_h),
                             class_id,
                             prob,
                             idx,

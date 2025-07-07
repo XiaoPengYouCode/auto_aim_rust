@@ -7,12 +7,7 @@ use ort::{
 };
 use tracing::{error, info};
 
-use crate::rbt_infra::rbt_utils::img_dbg::BoundingBox;
-use crate::rbt_mod::rbt_detector::rbt_detect_proc::{intersection, union};
-use crate::{
-    rbt_err::{self, RbtError},
-    rbt_mod::rbt_armor::ArmorClass,
-};
+use crate::{rbt_err::RbtError, rbt_mod::rbt_armor::ArmorClass};
 use crate::{
     rbt_infra::rbt_cfg,
     rbt_mod::rbt_armor::ArmorStaticMsg,
@@ -92,13 +87,11 @@ impl ArmorDetector {
             let w = row[2];
             let h = row[3];
 
+            let half_w = w / 2.0;
+            let half_h = h / 2.0;
+
             boxes.push((
-                BoundingBox {
-                    x1: xc - w / 2.,
-                    y1: yc - h / 2.,
-                    x2: xc + w / 2.,
-                    y2: yc + h / 2.,
-                },
+                BBox::new(xc - half_w, yc - half_h, xc + half_w, yc + half_h),
                 // label,
                 class_id,
                 prob,
@@ -172,9 +165,7 @@ impl ArmorDetector {
 /// iGPU + OPENVINO + oneAPI + oneDNN: FP16 10ms
 /// CUDA 12.6: FP16 5ms
 /// TensorRT 10: FP16 2.5ms
-pub fn pipeline(
-    cfg: &rbt_cfg::DetectorConfig,
-) -> Result<Vec<ArmorStaticMsg>, RbtError> {
+pub fn pipeline(cfg: &rbt_cfg::DetectorConfig) -> Result<Vec<ArmorStaticMsg>, RbtError> {
     // build session
     let session_builder = Session::builder()?;
     let mut session = if cfg.ort_ep == "TensorRT" {
@@ -226,4 +217,46 @@ pub fn pipeline(
     info!("Postprocessing time elapsed: {:?}", elapsed);
 
     Ok(result)
+}
+
+/// BoundingBox yolo模型候选框
+/// 因为目前跟神经网络交互的部分暂时还是 f32，所以暂时没有提供泛型实现
+#[derive(Debug, Clone, Copy)]
+pub struct BBox(f32, f32, f32, f32);
+
+impl BBox {
+    pub fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
+        BBox(x1, y1, x2, y2)
+    }
+
+    #[inline(always)]
+    fn x1(&self) -> f32 {
+        self.0
+    }
+
+    #[inline(always)]
+    fn y1(&self) -> f32 {
+        self.1
+    }
+
+    #[inline(always)]
+    fn x2(&self) -> f32 {
+        self.2
+    }
+
+    #[inline(always)]
+    fn y2(&self) -> f32 {
+        self.3
+    }
+}
+
+pub fn intersection(box1: &BBox, box2: &BBox) -> f32 {
+    (box1.x2().min(box2.x2()) - box1.x1().max(box2.x1()))
+        * (box1.y2().min(box2.y2()) - box1.y1().max(box2.y1()))
+}
+
+pub fn union(box1: &BBox, box2: &BBox) -> f32 {
+    ((box1.x2() - box1.x1()) * (box1.y2() - box1.y1()))
+        + ((box2.x2() - box2.x1()) * (box2.y2() - box2.y1()))
+        - intersection(box1, box2)
 }

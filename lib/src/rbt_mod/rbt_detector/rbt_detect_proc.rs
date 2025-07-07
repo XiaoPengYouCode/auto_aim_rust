@@ -2,7 +2,7 @@
 
 use image::GenericImageView;
 
-use crate::rbt_infra::rbt_utils::img_dbg::BoundingBox;
+use crate::rbt_mod::rbt_detector::{BBox, intersection, union};
 
 const GRAY: f32 = 114.0;
 
@@ -27,9 +27,7 @@ pub fn letterbox(input_array: &mut nd::Array4<f32>, resized_img: &image::Dynamic
     }
 }
 
-pub fn nms(
-    mut boxes: Vec<(BoundingBox, usize, f32, usize)>,
-) -> Vec<(BoundingBox, usize, f32, usize)> {
+pub fn nms(mut boxes: Vec<(BBox, usize, f32, usize)>) -> Vec<(BBox, usize, f32, usize)> {
     boxes.sort_by(|box1, box2| box2.2.total_cmp(&box1.2));
     // 按置信度降序排序
     let mut result = Vec::new();
@@ -42,13 +40,4 @@ pub fn nms(
             .collect(); // 去除与当前框重叠度较高的框
     }
     result
-}
-
-pub fn intersection(box1: &BoundingBox, box2: &BoundingBox) -> f32 {
-    (box1.x2.min(box2.x2) - box1.x1.max(box2.x1)) * (box1.y2.min(box2.y2) - box1.y1.max(box2.y1))
-}
-
-pub fn union(box1: &BoundingBox, box2: &BoundingBox) -> f32 {
-    ((box1.x2 - box1.x1) * (box1.y2 - box1.y1)) + ((box2.x2 - box2.x1) * (box2.y2 - box2.y1))
-        - intersection(box1, box2)
 }

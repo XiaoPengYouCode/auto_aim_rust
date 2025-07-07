@@ -39,13 +39,5 @@ pub enum RbtError {
     InvalidConfig(String),
 }
 
+/// 自定义 result 类型，简化函数签名
 pub type RbtResult<T> = Result<T, RbtError>;
-
-#[macro_export]
-macro_rules! rbt_bail_error {
-    ($err: expr) => {
-        let e = $err;
-        tracing::error!("{}", $err);
-        return Err(e.into());
-    };
-}
