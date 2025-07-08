@@ -1,3 +1,5 @@
+use na::Point2;
+
 #[derive(Debug, Copy, Clone)]
 pub struct ImgCoord(f64, f64);
 
@@ -15,5 +17,9 @@ impl ImgCoord {
     }
     pub fn y(&self) -> f64 {
         self.1
+    }
+
+    pub fn to_point2(&self) -> Point2<f64> {
+        Point2::new(self.x(), self.y())
     }
 }

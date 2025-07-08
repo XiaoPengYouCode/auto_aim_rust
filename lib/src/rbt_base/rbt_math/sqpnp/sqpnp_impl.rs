@@ -1,3 +1,4 @@
+use tracing::debug;
 use super::sqpnp_def::SQPSolution;
 use super::PnpSolver;
 
@@ -136,16 +137,6 @@ impl PnpSolver {
 
         self.row_and_null_space(r, &mut h, &mut n, &mut jh);
 
-        // Great, now if delta = H*x + N*y, we first compute x by solving:
-        //
-        //              (J*H)*x = g
-        //
-        // where g is the constraint vector g = [   1 - norm(r1)^2;
-        // 					     	   1 - norm(r2)^2;
-        //					     	   1 - norm(r3)^2;
-        //					           -r1'*r2;
-        //						   -r2'*r3;
-        //						   -r1'*r3 ];
         let mut g = na::SVector::<f64, 6>::zeros();
         g[0] = 1.0 - sqnorm_r1;
         g[1] = 1.0 - sqnorm_r2;
@@ -177,7 +168,7 @@ impl PnpSolver {
 
         // Solve with LDLt and if it fails, use inverse
         if Self::axb_solve_ldlt_3x3(&w, &rhs, &mut y).is_err() {
-            // println!("LDLt solve failed, falling back to matrix inverse.");
+            debug!("LDLt solve failed, falling back to matrix inverse.");
             // println!("W:\n{}", w);
             let w_inv = w.try_inverse().expect("Matrix inversion failed");
             y = w_inv * rhs;
@@ -240,12 +231,12 @@ impl PnpSolver {
         let t = &self.solutions[index].t;
 
         for i in 0..self.points.len() {
-            let m = &self.points[i].vector;
+            let m = &self.points[i];
             let x_c = r[0] * m[0] + r[1] * m[1] + r[2] * m[2] + t[0];
             let y_c = r[3] * m[0] + r[4] * m[1] + r[5] * m[2] + t[1];
             let inv_z_c = 1.0 / (r[6] * m[0] + r[7] * m[1] + r[8] * m[2] + t[2]);
 
-            let m = &self.projections[i].vector;
+            let m = &self.projections[i];
             let dx = x_c * inv_z_c - m[0];
             let dy = y_c * inv_z_c - m[1];
             avg += dx * dx + dy * dy;
@@ -273,7 +264,7 @@ impl PnpSolver {
             if self.weights[i] == 0.0 {
                 continue;
             }
-            let m = &point.vector;
+            let m = &point;
             if r[6] * m[0] + r[7] * m[1] + r[8] * m[2] + t[2] > 0.0 {
                 npos += 1;
             } else {
@@ -524,11 +515,6 @@ impl PnpSolver {
     ) {
         // Applying Gram-Schmidt orthogonalization on the Jacobian.
         // The steps are fixed here to take advantage of the sparse form of the matrix
-        //
-        tracing::info!("r = {}", r);
-        tracing::info!("h = {}", h);
-        tracing::info!("n = {}", n);
-        tracing::info!("k = {}", k);
         *h = na::SMatrix::<f64, 9, 6>::zeros();
 
         // 1. q1

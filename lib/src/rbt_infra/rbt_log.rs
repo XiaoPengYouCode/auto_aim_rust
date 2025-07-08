@@ -1,11 +1,15 @@
 use tracing::info;
 use tracing_subscriber::Layer;
+use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, registry, util::SubscriberInitExt};
 
 use crate::rbt_err::RbtResult;
 use crate::rbt_global::GENERIC_RBT_CFG;
 
-pub async fn logger_init() -> RbtResult<Option<tracing_appender::non_blocking::WorkerGuard>> {
+/// 注意函数的调用方只需要维持 Option 就行
+/// 可以用于区分是否存在 appender 守护
+/// 在本场景中没有作用，无需解包
+pub async fn logger_init() -> RbtResult<Option<WorkerGuard>> {
     let logger_cfg = GENERIC_RBT_CFG.read().unwrap().logger_cfg.clone();
     if !logger_cfg.file_log_enable && !logger_cfg.console_log_enable {
         return Ok(None);

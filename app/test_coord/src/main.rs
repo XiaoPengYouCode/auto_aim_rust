@@ -1,5 +1,5 @@
-use auto_aim_rust::rbt_base::rbt_cam_model::RbtCamExtrinsics;
-use auto_aim_rust::rbt_base::rbt_geometry::rbt_coord::RbtWorldPoint3;
+use lib::rbt_base::rbt_cam_model::RbtCamExtrinsics;
+use lib::rbt_base::rbt_geometry::rbt_coord::RbtWorldPoint3;
 
 use nalgebra as na;
 
@@ -19,6 +19,7 @@ fn main() {
     // 总旋转：先变换坐标系，再添加俯仰角（注意乘法顺序！先右乘坐标轴转换，再左乘pitch旋转）
     let total_rotation = pitch_rotation * camera_axes_to_body_axes_rotation;
 
+    // 基于base的移动
     let translation = na::Translation3::new(0.05, 0.01, 0.32);
     let cam_extrinsics = RbtCamExtrinsics::new(total_rotation, translation);
 

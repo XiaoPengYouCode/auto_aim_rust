@@ -22,7 +22,7 @@ pub struct ArmorDetector {
 }
 
 impl ArmorDetector {
-    fn init(_cfg: &rbt_cfg::DetectorConfig) -> ArmorDetector {
+    fn init(_cfg: &rbt_cfg::DetectorCfg) -> ArmorDetector {
         Self {
             img: ImageReader::open("./imgs/test_resize.jpg")
                 .unwrap()
@@ -165,7 +165,7 @@ impl ArmorDetector {
 /// iGPU + OPENVINO + oneAPI + oneDNN: FP16 10ms
 /// CUDA 12.6: FP16 5ms
 /// TensorRT 10: FP16 2.5ms
-pub fn pipeline(cfg: &rbt_cfg::DetectorConfig) -> Result<Vec<ArmorStaticMsg>, RbtError> {
+pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> Result<Vec<ArmorStaticMsg>, RbtError> {
     // build session
     let session_builder = Session::builder()?;
     let mut session = if cfg.ort_ep == "TensorRT" {
@@ -190,7 +190,6 @@ pub fn pipeline(cfg: &rbt_cfg::DetectorConfig) -> Result<Vec<ArmorStaticMsg>, Rb
     }
     .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
     .with_inter_threads(16)?
-    // .with_float16_enabled(true)?
     .commit_from_file(cfg.armor_detect_model_path.as_str())?;
 
     // init armor detector

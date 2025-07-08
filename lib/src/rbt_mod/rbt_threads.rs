@@ -5,7 +5,7 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
-use crate::rbt_base::rbt_frame::{RbtFrame, RbtFrameState};
+use crate::rbt_base::rbt_frame::{RbtFrame, RbtFrameStage};
 use crate::rbt_mod::rbt_armor::ArmorStaticMsg;
 use crate::rbt_mod::rbt_detector::BBox;
 use crate::rbt_mod::rbt_detector::rbt_detect_proc::{letterbox, nms};
@@ -33,7 +33,7 @@ pub fn pre_process(queue: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()> {
 
                 rbt_frame.pre_data().assign(&input_array);
                 rbt_frame.set_id(frame_id);
-                rbt_frame.set_state(RbtFrameState::Pre);
+                rbt_frame.set_state(RbtFrameStage::Pre);
                 rbt_frame
             })
             .await;
@@ -82,7 +82,7 @@ pub fn infer(
                     frame.id(),
                     frame.time_used()
                 );
-                frame.set_state(RbtFrameState::Infer);
+                frame.set_state(RbtFrameStage::Infer);
                 let id = frame.id(); // 获取帧 ID，用于日志记录
                 // 在阻塞线程中执行推理操作
                 let output_result = tokio::task::spawn_blocking(move || {
@@ -137,7 +137,7 @@ pub async fn post_process(frame: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()>
                     frame.id(),
                     time_used
                 );
-                frame.set_state(RbtFrameState::Post); // 更新状态为后处理
+                frame.set_state(RbtFrameStage::Post); // 更新状态为后处理
                 let id = frame.id(); // 获取帧 ID，用于日志记录
                 // 在阻塞线程中执行后处理操作
                 let result = tokio::task::spawn_blocking(move || {

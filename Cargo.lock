@@ -808,15 +808,12 @@ dependencies = [
 ]
 
 [[package]]
-name = "auto_aim"
-version = "0.1.0"
-
-[[package]]
 name = "auto_aim_async"
 version = "0.1.0"
 dependencies = [
  "lib",
  "ort",
+ "rerun",
  "tokio",
  "tracing",
 ]
@@ -3412,6 +3409,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "io-uring"
+version = "0.7.8"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b86e202f00093dcba4275d4636b93ef9dd75d025ae560d2521b45ea28ab49013"
+dependencies = [
+ "bitflags 2.9.1",
+ "cfg-if",
+ "libc",
+]
+
+[[package]]
 name = "ipnet"
 version = "2.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5263,7 +5271,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
 dependencies = [
  "anyhow",
- "itertools 0.12.1",
+ "itertools 0.14.0",
  "proc-macro2",
  "quote",
  "syn",
@@ -7995,6 +8003,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "single_frame"
+version = "0.1.0"
+dependencies = [
+ "lib",
+ "nalgebra 0.33.2",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "single_frame_dev"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "lib",
+ "nalgebra 0.33.2",
+ "rerun",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
 name = "siphasher"
 version = "0.3.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8136,6 +8166,12 @@ dependencies = [
 [[package]]
 name = "sqpnp_benchmark"
 version = "0.1.0"
+dependencies = [
+ "lib",
+ "nalgebra 0.33.2",
+ "tokio",
+ "tracing",
+]
 
 [[package]]
 name = "ssri"
@@ -8320,6 +8356,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "06794f8f6c5c898b3275aebefa6b8a1cb24cd2c6c79397ab15774837a0bc5755"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "test_coord"
+version = "0.1.0"
+dependencies = [
+ "lib",
+ "nalgebra 0.33.2",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -8525,17 +8571,19 @@ dependencies = [
 
 [[package]]
 name = "tokio"
-version = "1.45.1"
+version = "1.46.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "75ef51a33ef1da925cea3e4eb122833cb377c61439ca401b770f54902b806779"
+checksum = "0cc3a2344dafbe23a245241fe8b09735b521110d30fcefbbd5feb1797ca35d17"
 dependencies = [
  "backtrace",
  "bytes",
+ "io-uring",
  "libc",
  "mio 1.0.4",
  "parking_lot",
  "pin-project-lite",
  "signal-hook-registry",
+ "slab",
  "socket2",
  "tokio-macros",
  "windows-sys 0.52.0",

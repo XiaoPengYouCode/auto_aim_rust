@@ -5,11 +5,10 @@ use tracing::error;
 use sqpnp_def::OmegaNullspaceMethod;
 use sqpnp_def::SQPSolution;
 use sqpnp_def::SolverParameters;
-use sqpnp_def::{Point, Projection};
 
 pub struct PnpSolver {
-    pub projections: Vec<Projection>,
-    pub points: Vec<Point>,
+    pub projections: Vec<na::Point2<f64>>,
+    pub points: Vec<na::Point3<f64>>,
     pub weights: Vec<f64>,
     pub parameters: SolverParameters,
 
@@ -38,7 +37,7 @@ impl Default for PnpSolver {
             p: na::SMatrix::<f64, 3, 9>::zeros(),
             point_mean: na::SVector::<f64, 3>::zeros(),
             num_null_vectors: 0,
-            solutions: Vec::with_capacity(18),
+            solutions: Vec::with_capacity(18), // 访问前须调用 solve 方法
             num_solutions: 0,
         }
     }
@@ -48,10 +47,10 @@ impl PnpSolver {
     /// 注意这里的函数参数少了 parameters
     /// 在PnpSolver::default()中会调用SolverParameters::default()
     pub fn new(
-        points_3d: Vec<Point>,
-        projections: Vec<Projection>,
+        points_3d: Vec<na::Point3<f64>>,
+        projections: Vec<na::Point2<f64>>,
         weights: Option<&[f64]>,
-    ) -> Result<Self, Box<dyn std::error::Error>> {
+    ) -> Result<Self, String> {
         let mut solver = PnpSolver::default();
 
         let n = points_3d.len();
@@ -106,17 +105,17 @@ impl PnpSolver {
                 continue; // Skip zero-weight points
             }
 
-            let proj = solver.projections[i].vector;
+            let proj = solver.projections[i];
             let wx = proj[0] * w;
             let wy = proj[1] * w;
-            let wsq_norm_m = w * proj.norm_squared();
+            let wsq_norm_m = w * proj.coords.norm_squared();
 
             sum_wx += wx;
             sum_wy += wy;
             sum_wx2_plus_wy2 += wsq_norm_m;
             sum_w += w;
 
-            let pt = solver.points[i].vector;
+            let pt = solver.points[i];
             let x = pt[0];
             let y = pt[1];
             let z = pt[2];

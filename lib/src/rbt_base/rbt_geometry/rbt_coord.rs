@@ -1,5 +1,3 @@
-extern crate nalgebra as na;
-
 // base
 #[derive(Debug, Clone)]
 pub struct RbtImgPoint2 {

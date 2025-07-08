@@ -2,7 +2,7 @@
 
 use nalgebra as na;
 use tracing::error;
-
+use crate::rbt_base::rbt_geometry::rbt_point_dev::{RbtImgPoint2, RbtImgPoint2Coord};
 use crate::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_generic::ImgCoord;
 
@@ -63,15 +63,22 @@ impl ArmorStaticMsg {
         ]
     }
 
-    // pub fn image(&self) -> &ImageBuffer<Rgba<u8>, Vec<u8>> {
-    //     &self.image
-    // }
-
-    pub fn corner_points_na(&self) -> Vec<na::Vector2<f64>> {
+    /// 给部分点一个z轴高度 1e-6 给共面点加一个小小的扰动，提高数值稳定性
+    pub fn corner_points_na(&self) -> Vec<na::Point2<f64>> {
         self.corner_points()
             .iter()
-            .map(|p| na::Vector2::new(p.x(), p.y()))
+            .enumerate()
+            .map(|(idx, p)| na::Point2::new(p.x(), p.y()))
             .collect()
+    }
+
+    pub fn cornet_points(&self) -> Vec<RbtImgPoint2> {
+        let lt = RbtImgPoint2::new(self.left_top().x(), self.left_top().y(), RbtImgPoint2Coord::Screen);
+        let lb = RbtImgPoint2::new(self.left_bottom().x(), self.left_bottom().y(), RbtImgPoint2Coord::Screen);
+        let rb = RbtImgPoint2::new(self.right_bottom().x(), self.right_bottom().y(), RbtImgPoint2Coord::Screen);
+        let rt = RbtImgPoint2::new(self.right_top().x(), self.right_top().y(), RbtImgPoint2Coord::Screen);
+        let points = vec![lt, lb, rb, rt];
+        points
     }
 
     pub fn fmt(&self) -> String {
@@ -216,6 +223,13 @@ enum ArmorType {
     Small,
     Large,
 }
+
+pub const SMALL_ARMOR_POINT3: [na::Point3<f64>; 4] = [
+    na::Point3::new(-135.0 / 2.0, 55.0 / 2.0, 1e-6),
+    na::Point3::new(-135.0 / 2.0, -55.0 / 2.0, 1e-6),
+    na::Point3::new(135.0 / 2.0, -55.0 / 2.0, 1e-6),
+    na::Point3::new(135.0 / 2.0, 55.0 / 2.0, 1e-6),
+];
 
 // impl std::fmt::Display for ArmorColor {
 //     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

@@ -3,6 +3,7 @@
 /.idea
 /.vscode
 /log/*
+/rerun-log/*
 
 # Added by cargo
 #

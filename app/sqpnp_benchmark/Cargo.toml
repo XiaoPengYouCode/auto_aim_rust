@@ -6,3 +6,7 @@ authors.workspace = true
 license.workspace = true
 
 [dependencies]
+lib = { path = "../../lib" }
+tokio = {workspace = true}
+nalgebra = {workspace = true}
+tracing = {workspace = true}

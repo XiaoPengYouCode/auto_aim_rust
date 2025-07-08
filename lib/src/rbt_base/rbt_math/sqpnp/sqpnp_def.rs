@@ -169,47 +169,51 @@ impl SolverParametersBuilder {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Projection {
-    pub vector: na::SVector<f64, 2>,
-}
+// #[derive(Debug, Clone)]
+// pub struct Projection {
+//     pub vector: na::SVector<f64, 2>,
+// }
+//
+// impl Projection {
+//     pub fn new(x: f64, y: f64) -> Self {
+//         Projection {
+//             vector: na::SVector::<f64, 2>::new(x, y),
+//         }
+//     }
+// }
+//
+// impl Default for Projection {
+//     fn default() -> Self {
+//         Projection {
+//             vector: na::SVector::<f64, 2>::zeros(),
+//         }
+//     }
+// }
 
-impl Projection {
-    pub fn new(x: f64, y: f64) -> Self {
-        Projection {
-            vector: na::SVector::<f64, 2>::new(x, y),
-        }
-    }
-}
-
-impl Default for Projection {
-    fn default() -> Self {
-        Projection {
-            vector: na::SVector::<f64, 2>::zeros(),
-        }
-    }
-}
-
-#[derive(Debug, Clone)]
-pub struct Point {
-    pub vector: na::SVector<f64, 3>,
-}
-
-impl Point {
-    pub fn new(x: f64, y: f64, z: f64) -> Self {
-        Point {
-            vector: na::SVector::<f64, 3>::new(x, y, z),
-        }
-    }
-}
-
-impl Default for Point {
-    fn default() -> Self {
-        Point {
-            vector: na::SVector::<f64, 3>::zeros(),
-        }
-    }
-}
+// #[derive(Debug, Clone)]
+// pub struct Point3 {
+//     pub vector: na::SVector<f64, 3>,
+// }
+//
+// impl std::ops::Deref for Point3 {
+//     type Target = na::SVector<f64, 3>;
+//
+//     fn deref(&self) -> &Self::Target {
+//         &self.vector
+//     }
+// }
+//
+// impl Point3 {
+//     pub fn new(x: f64, y: f64, z: f64) -> Self {
+//         Point3 {
+//             vector: na::SVector::<f64, 3>::new(x, y, z),
+//         }
+//     }
+//
+//     pub fn zeros() -> Self {
+//         Point3::new(0.0, 0.0, 0.0)
+//     }
+// }
 
 #[derive(Debug, Clone, Copy)]
 pub struct SQPSolution {

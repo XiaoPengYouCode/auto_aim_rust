@@ -1,5 +1,5 @@
 [workspace]
-members = ["lib", "app/auto_aim", "app/auto_aim_async", "app/sqpnp_benchmark"]
+members = ["lib", "app/single_frame", "app/auto_aim_async", "app/sqpnp_benchmark", "app/single_frame_dev", "app/test_coord"]
 default-members = ["lib"]
 resolver = "3"
 

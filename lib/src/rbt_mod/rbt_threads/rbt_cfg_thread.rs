@@ -21,19 +21,17 @@ pub async fn rbt_cfg_thread(
     init_cfg: RbtCfg,
 ) -> JoinHandle<RbtResult<()>> {
     tokio::spawn(async move {
-        let (event_tx, mut event_rx) = channel::<(Event, u64)>(10);
+        let (event_tx, mut event_rx) = channel::<Event>(10);
         let mut cfg_update_count = 0;
-        let mut event_counter = 0;
-        // the res maybe occur error when something wrong like file was delete
+        // the res maybe occur error when something wrong like file was deleted
         let mut watcher = recommended_watcher(move |res: Result<Event, notify::Error>| {
             match res {
                 Ok(event) => {
-                    event_counter += 1;
                     if event.paths.iter().any(|p| p.ends_with("rbt_cfg.toml"))
                         && matches!(event.kind, EventKind::Modify(_))
                     {
                         // info!("Receive event: {:?}, counter:{}", event.kind, event_counter);
-                        if event_tx.blocking_send((event, event_counter)).is_err() {
+                        if event_tx.blocking_send(event).is_err() {
                             error!("Failed to send file watcher event throw channel 参数不会更新");
                         };
                     }
@@ -81,8 +79,7 @@ pub async fn rbt_cfg_thread(
                 // 实际情况是过滤条件给太狠了，需要放宽监听条件
                 // 但是也不能太宽，因为各种命令行工具也可能会读取这些文件，产生事件
                 // 最终选择 modify 作为过滤条件，一般一次改动中，开始是几次 data modify，最后一次是 metadata modify
-                Some((_, event_counter)) = event_rx.recv() => {
-                    // info!("Receive event from channel: {}", event_counter);
+                Some(_) = event_rx.recv() => {
                     debounce_deadline = Some(Instant::now() + debounce_duration);
                 }
 
@@ -90,7 +87,7 @@ pub async fn rbt_cfg_thread(
                 _ = debounce_future, if debounce_deadline.is_some() => {
                     info!("reload cfg");
                     debounce_deadline = None;
-                    match rbt_cfg::RbtCfg::from_toml_async().await {
+                    match RbtCfg::from_toml_async().await {
                         Ok(rbt_cfg_new) => {
                             // if the new and old version are same, skip cfg update
                             if rbt_cfg_new == old_version_cfg {

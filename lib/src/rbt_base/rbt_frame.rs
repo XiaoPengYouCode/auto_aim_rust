@@ -7,10 +7,10 @@ pub struct RbtFrame {
     time: Instant,
     pub data: RbtFrameData,
     id: u64,
-    state: RbtFrameState,
+    stage: RbtFrameStage,
 }
 
-pub enum RbtFrameState {
+pub enum RbtFrameStage {
     Pre,
     Infer,
     Post,
@@ -26,7 +26,7 @@ impl RbtFrame {
                 infer_post: nd::Array3::<f32>::zeros([5040, 48, 1]),
             },
             id: 0,
-            state: RbtFrameState::Init,
+            stage: RbtFrameStage::Init,
         }
     }
 
@@ -38,8 +38,8 @@ impl RbtFrame {
         self.id = id;
     }
 
-    pub fn set_state(&mut self, state: RbtFrameState) {
-        self.state = state;
+    pub fn set_state(&mut self, state: RbtFrameStage) {
+        self.stage = state;
     }
 
     pub fn time(&self) -> Instant {
@@ -61,8 +61,8 @@ impl RbtFrame {
 
 impl Drop for RbtFrame {
     fn drop(&mut self) {
-        match &self.state {
-            RbtFrameState::Init => {
+        match &self.stage {
+            RbtFrameStage::Init => {
                 // 初始状态，该状态仅仅用于创建空的 RbtFrame
                 FAILED_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 error!(
@@ -71,7 +71,7 @@ impl Drop for RbtFrame {
                     self.time.elapsed()
                 )
             }
-            RbtFrameState::Pre => {
+            RbtFrameStage::Pre => {
                 // Pre 属于生产者，而且生产速度很快，被丢弃的情况较多
                 FAILED_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 debug!(
@@ -80,7 +80,7 @@ impl Drop for RbtFrame {
                     self.time.elapsed()
                 )
             }
-            RbtFrameState::Infer => {
+            RbtFrameStage::Infer => {
                 // Infer 属于消费者，速度较慢，丢弃的情况较少，所以使用 warn 级别
                 FAILED_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 warn!(
@@ -89,7 +89,7 @@ impl Drop for RbtFrame {
                     self.time.elapsed()
                 );
             }
-            RbtFrameState::Post => {
+            RbtFrameStage::Post => {
                 // Post 属于消费者，速度较快，但是位于下游，所以速度受到 infer 的限制
                 debug!(
                     "RbtFrame with id {} is being dropped in Post, with lifetime {:?}",

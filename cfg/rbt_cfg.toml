@@ -22,5 +22,5 @@ infer_full_height = 480
 confidence_threshold = 0.8
 ort_ep = "OpenVINO"
 
-[camera_cfg]
-camera_k = [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+[cam_cfg]
+cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]
