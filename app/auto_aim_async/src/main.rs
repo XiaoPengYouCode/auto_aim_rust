@@ -3,6 +3,7 @@ extern crate rerun as rr;
 use auto_aim_rust::{rbt_err::RbtResult, rbt_infra::rbt_log};
 use lib as auto_aim_rust;
 
+pub mod rbt_threads;
 mod threads;
 
 #[tokio::main]

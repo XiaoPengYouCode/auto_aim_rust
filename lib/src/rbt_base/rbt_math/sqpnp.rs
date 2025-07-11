@@ -1,10 +1,10 @@
 pub mod sqpnp_def;
 pub mod sqpnp_impl;
 
-use tracing::error;
 use sqpnp_def::OmegaNullspaceMethod;
 use sqpnp_def::SQPSolution;
 use sqpnp_def::SolverParameters;
+use tracing::error;
 
 pub struct PnpSolver {
     pub projections: Vec<na::Point2<f64>>,
@@ -57,7 +57,11 @@ impl PnpSolver {
         let n_projections = projections.len();
 
         if n != n_projections {
-            error!("Number of projections does not match number of points: points_num {} != projection_num {}", n, projections.len());
+            error!(
+                "Number of projections does not match number of points: points_num {} != projection_num {}",
+                n,
+                projections.len()
+            );
             return Err("Number of projections does not match number of points".into());
         }
 

@@ -1,6 +1,6 @@
 use tracing::info;
-use tracing_subscriber::Layer;
 use tracing_appender::non_blocking::WorkerGuard;
+use tracing_subscriber::Layer;
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, registry, util::SubscriberInitExt};
 
 use crate::rbt_err::RbtResult;

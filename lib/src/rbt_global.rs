@@ -1,6 +1,6 @@
 use lazy_static::lazy_static;
-use std::sync::atomic::{AtomicBool, AtomicU32};
 use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, AtomicU32};
 
 use crate::rbt_infra::rbt_cfg::RbtCfg;
 

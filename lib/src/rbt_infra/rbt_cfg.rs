@@ -52,7 +52,6 @@ pub struct EstimatorConfig {
     top2_activate_w: f64,
 }
 
-
 /// 总配置
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct RbtCfg {

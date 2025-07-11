@@ -1,5 +1,5 @@
 [package]
-name = "sqpnp_benchmark"
+name = "ippe_benchmark"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -7,6 +7,6 @@ license.workspace = true
 
 [dependencies]
 lib = { path = "../../lib" }
-tokio = {workspace = true}
 nalgebra = {workspace = true}
 tracing = {workspace = true}
+rerun = {workspace = true}

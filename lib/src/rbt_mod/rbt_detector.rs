@@ -118,18 +118,6 @@ impl ArmorDetector {
         // 收集结果
         let mut armors = Vec::<ArmorStaticMsg>::with_capacity(boxes.len());
         for (_, class_id, _, idx) in result {
-            // 获取装甲板图像切片
-            // let armor_img = self
-            //     .img
-            //     .view(
-            //         bounding_box.x1 as u32 + 5,
-            //         bounding_box.y1 as u32 - 20,
-            //         (bounding_box.x2 - bounding_box.x1) as u32 - 10,
-            //         (bounding_box.y2 - bounding_box.y1) as u32 + 40,
-            //     )
-            //     .to_image();
-            // armor_img.save(format!("imgs/armor_{idx}.png")).unwrap();
-            // 收集中心点和特征点坐标信息
             let armor = ArmorStaticMsg::new(
                 ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]),
                 ImgCoord::from_f32(output[[idx, 40]], output[[idx, 41]]),
@@ -141,7 +129,7 @@ impl ArmorDetector {
             let armor_class = ArmorClass::from_yolo_output_idx(class_id).unwrap();
 
             info!(
-                "Armor {} detected at center: {:?}",
+                "Armor {} detected: center: {:?}",
                 armor_class,
                 armor.center()
             );

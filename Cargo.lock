@@ -3426,6 +3426,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "469fb0b9cefa57e3ef31275ee7cacb78f2fdca44e4765491884a2b119d4eb130"
 
 [[package]]
+name = "ippe_benchmark"
+version = "0.1.0"
+dependencies = [
+ "lib",
+ "nalgebra 0.33.2",
+ "rerun",
+ "tracing",
+]
+
+[[package]]
 name = "iri-string"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -8003,16 +8013,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "single_frame"
-version = "0.1.0"
-dependencies = [
- "lib",
- "nalgebra 0.33.2",
- "tokio",
- "tracing",
-]
-
-[[package]]
 name = "single_frame_dev"
 version = "0.1.0"
 dependencies = [
@@ -8161,16 +8161,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "eda41003dc44290527a59b13432d4a0379379fa074b70174882adfbdfd917844"
 dependencies = [
  "bitflags 2.9.1",
-]
-
-[[package]]
-name = "sqpnp_benchmark"
-version = "0.1.0"
-dependencies = [
- "lib",
- "nalgebra 0.33.2",
- "tokio",
- "tracing",
 ]
 
 [[package]]

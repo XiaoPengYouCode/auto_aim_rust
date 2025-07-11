@@ -59,12 +59,10 @@ impl RbtCamExtrinsics {
     }
 }
 
-
 /// 使用内参归一化图像坐标系点到相机坐标系点
 pub fn adjust_coordinates(k: &na::SMatrix<f64, 3, 3>, projections: &mut Vec<na::Point2<f64>>) {
     for projection in projections.iter_mut() {
-        let adjusted = k.try_inverse().unwrap()
-            * na::Vector3::new(projection.x, projection.y, 1.0);
+        let adjusted = k.try_inverse().unwrap() * na::Vector3::new(projection.x, projection.y, 1.0);
         *projection = na::Point2::new(adjusted.x / adjusted.z, adjusted.y / adjusted.z);
     }
 }

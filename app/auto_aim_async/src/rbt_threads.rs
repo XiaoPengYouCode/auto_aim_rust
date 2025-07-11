@@ -5,14 +5,14 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
-use crate::rbt_base::rbt_frame::{RbtFrame, RbtFrameStage};
-use crate::rbt_mod::rbt_armor::ArmorStaticMsg;
-use crate::rbt_mod::rbt_detector::BBox;
-use crate::rbt_mod::rbt_detector::rbt_detect_proc::{letterbox, nms};
-use crate::rbt_mod::rbt_generic::ImgCoord;
+use lib::rbt_base::rbt_frame::{RbtFrame, RbtFrameStage};
+use lib::rbt_mod::rbt_armor::ArmorStaticMsg;
+use lib::rbt_mod::rbt_detector::BBox;
+use lib::rbt_mod::rbt_detector::rbt_detect_proc::{letterbox, nms};
+use lib::rbt_mod::rbt_generic::ImgCoord;
 
-use crate::rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING};
-use crate::rbt_infra::rbt_queue_async::RbtQueueAsync;
+use lib::rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING};
+use lib::rbt_infra::rbt_queue_async::RbtQueueAsync;
 
 pub mod rbt_cfg_thread;
 
@@ -25,7 +25,8 @@ pub fn pre_process(queue: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()> {
             // 在阻塞线程中执行图像处理操作，以避免阻塞异步运行时
             let result = tokio::task::spawn_blocking(move || {
                 // 从磁盘加载图像
-                let resized_img = image::open("imgs/test_resize.jpg").expect("无法打开图像");
+                let resized_img =
+                    image::open("../../../imgs/test_resize.jpg").expect("无法打开图像");
 
                 // 创建一个 4D 数组以存储处理后的图像数据。
                 let mut input_array = nd::Array4::zeros((1, 3, 384, 640));

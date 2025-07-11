@@ -8,11 +8,11 @@ use ort::{execution_providers, session::Session};
 use std::sync::Arc;
 use tracing::info;
 
+use crate::rbt_threads::{infer, post_process, pre_process};
 use lib::rbt_base::rbt_frame::RbtFrame;
 use lib::rbt_err::RbtResult;
 use lib::rbt_global::GENERIC_RBT_CFG;
 use lib::rbt_infra::rbt_queue_async::RbtQueueAsync;
-use lib::rbt_mod::rbt_threads::{infer, post_process, pre_process};
 
 pub async fn multi_thread_pipeline(rec: rr::RecordingStream) -> RbtResult<()> {
     let pre_infer_queue = Arc::new(RbtQueueAsync::<RbtFrame>::new(1));
