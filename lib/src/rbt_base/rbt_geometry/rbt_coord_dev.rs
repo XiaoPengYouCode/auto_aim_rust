@@ -139,16 +139,3 @@ impl RbtPose {
         )
     }
 }
-
-pub struct RbtCylindricalCoord {
-    pub r: f64,
-    pub theta_d: f64,
-    pub z: f64,
-}
-
-impl RbtCylindricalCoord {
-    /// theta d means degree angle
-    pub fn new(r: f64, theta_d: f64, z: f64) -> Self {
-        Self { r, theta_d, z }
-    }
-}
