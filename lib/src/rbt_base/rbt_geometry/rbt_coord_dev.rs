@@ -1,5 +1,5 @@
 use crate::rbt_base::rbt_ippe::{ARMOR_LIGHT_HEIGHT, ARMOR_LIGHT_WEIGHT};
-use crate::rbt_err::{RbtError, RbtResult};
+use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use na::{Isometry3, Vector3};
 use tracing::error;
 

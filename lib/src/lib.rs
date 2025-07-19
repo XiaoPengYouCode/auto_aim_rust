@@ -1,6 +1,4 @@
-pub mod rbt_base; // 基础库（math, geometry）
-pub mod rbt_err; // 自定义错误类型
-pub mod rbt_global; // 全局变量
+pub mod rbt_base; // 全局变量
 pub mod rbt_infra; // 基础设施
 pub mod rbt_mod; // 模块
 

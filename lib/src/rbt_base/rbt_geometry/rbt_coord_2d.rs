@@ -1,5 +1,6 @@
+#[derive(Debug)]
 pub struct RbtCylindricalCoord2 {
-    pub dist: f64, // 相对与世界坐标系原点的距离
+    pub dist: f64,        // 相对与世界坐标系原点的距离
     pub angle_yaw_d: f64, // 在世界坐标系下的角度
 }
 
@@ -12,9 +13,7 @@ impl RbtCylindricalCoord2 {
         let p = xy.into();
         let (x, y) = (p.x, p.y);
         let distance = (x * x + y * y).sqrt();
-        let yaw = y / x
-            .atan()
-            .to_degrees();
+        let yaw = y / x.atan().to_degrees();
         Self::new(distance, yaw)
     }
 }

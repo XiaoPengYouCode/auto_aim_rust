@@ -5,9 +5,13 @@ use ort::{
     session::{Session, SessionOutputs},
     value::TensorRef,
 };
+use strum::EnumCount;
 use tracing::{error, info};
 
-use crate::{rbt_err::RbtError, rbt_mod::rbt_armor::ArmorClass};
+use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
+use crate::rbt_mod::rbt_armor::ArmorLabel;
+use crate::rbt_mod::rbt_enemy::EnemyId;
+use crate::rbt_mod::rbt_solver::RbtSolver;
 use crate::{
     rbt_infra::rbt_cfg,
     rbt_mod::rbt_armor::ArmorStaticMsg,
@@ -62,7 +66,10 @@ impl ArmorDetector {
     /// 2. 利用IOU筛选装甲板
     /// 3. 统计装甲板信息
     /// 4. 切片装甲板图片
-    pub fn post_process(&self, outputs: &SessionOutputs) -> ort::Result<Vec<ArmorStaticMsg>> {
+    pub fn post_process(
+        &self,
+        outputs: &SessionOutputs,
+    ) -> ort::Result<Box<[Vec<ArmorStaticMsg>]>> {
         // // f32
         let output = outputs["output0"]
             .try_extract_array::<f32>()?
@@ -92,7 +99,6 @@ impl ArmorDetector {
 
             boxes.push((
                 BBox::new(xc - half_w, yc - half_h, xc + half_w, yc + half_h),
-                // label,
                 class_id,
                 prob,
                 idx,
@@ -103,7 +109,6 @@ impl ArmorDetector {
         // 作用是寻找最准确的目标检测框
         boxes.sort_by(|box1, box2| box2.2.total_cmp(&box1.2));
         let mut result = Vec::new();
-
         while !boxes.is_empty() {
             result.push(boxes[0]);
             boxes = boxes
@@ -116,8 +121,25 @@ impl ArmorDetector {
         }
 
         // 收集结果
-        let mut armors = Vec::<ArmorStaticMsg>::with_capacity(boxes.len());
+        // let mut armors = Vec::<ArmorStaticMsg>::with_capacity(boxes.len());
+        let mut armors: Box<[Vec<ArmorStaticMsg>]> =
+            vec![vec![]; EnemyId::COUNT].into_boxed_slice();
+
         for (_, class_id, _, idx) in result {
+            let armor_class = ArmorLabel::from_yolo_output_idx(class_id).unwrap();
+            let armor_index = match armor_class {
+                ArmorLabel::Red(label_idx) | ArmorLabel::Blue(label_idx) => {
+                    match label_idx {
+                        1 => 0,        // hero1
+                        2 => 1,        // engineer2
+                        3 => 2,        // infanty3
+                        4 => 3,        // infanty4
+                        7 => 4,        // sentry
+                        8 => 5,        // outpost
+                        _ => continue, // 不是的话直接跳过
+                    }
+                }
+            };
             let armor = ArmorStaticMsg::new(
                 ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]),
                 ImgCoord::from_f32(output[[idx, 40]], output[[idx, 41]]),
@@ -126,16 +148,7 @@ impl ArmorDetector {
                 ImgCoord::from_f32(output[[idx, 46]], output[[idx, 47]]),
             );
 
-            let armor_class = ArmorClass::from_yolo_output_idx(class_id).unwrap();
-
-            info!(
-                "Armor {} detected: center: {:?}",
-                armor_class,
-                armor.center()
-            );
-
-            // 收集装甲板图片
-            armors.push(armor);
+            armors[armor_index].push(armor);
         }
         Ok(armors)
     }
@@ -153,7 +166,7 @@ impl ArmorDetector {
 /// iGPU + OPENVINO + oneAPI + oneDNN: FP16 10ms
 /// CUDA 12.6: FP16 5ms
 /// TensorRT 10: FP16 2.5ms
-pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> Result<Vec<ArmorStaticMsg>, RbtError> {
+pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<Box<[Vec<ArmorStaticMsg>]>> {
     // build session
     let session_builder = Session::builder()?;
     let mut session = if cfg.ort_ep == "TensorRT" {

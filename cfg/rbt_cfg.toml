@@ -1,4 +1,10 @@
-# robot_config.toml
+# rbt_cfg.toml
+
+[game_cfg]
+# 电控发送优先级大于自己设置的优先级
+# 如果设置出现错误，会有 log 警告
+enemy_fraction = "blue"
+# enemy_fraction = "red"
 
 [logger_cfg]
 console_log_filter = "info,auto_aim_rust=debug,ort=warn"
@@ -24,3 +30,4 @@ ort_ep = "OpenVINO"
 
 [cam_cfg]
 cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]
+

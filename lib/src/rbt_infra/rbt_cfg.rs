@@ -2,7 +2,45 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::rbt_bail_error;
-use crate::rbt_err::{RbtError, RbtResult};
+use crate::rbt_base::rbt_game::EnemyFaction;
+use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct GameCfg {
+    enemy_fraction: String,
+}
+
+impl GameCfg {
+    pub fn enemy_fraction(&self) -> Option<EnemyFaction> {
+        if self.enemy_fraction.trim() == "blue" {
+            Some(EnemyFaction::Blue)
+        } else if self.enemy_fraction.trim() == "red" {
+            Some(EnemyFaction::Red)
+        } else {
+            eprintln!("请检查 game_cfg/enemy_fraction 设置");
+            None
+        }
+    }
+
+    pub fn self_fraction(&self) -> Option<EnemyFaction> {
+        if self.enemy_fraction.trim() == "blue" {
+            Some(EnemyFaction::Red)
+        } else if self.enemy_fraction.trim() == "red" {
+            Some(EnemyFaction::Blue)
+        } else {
+            eprintln!("请检查 game_cfg/enemy_fraction 设置");
+            None
+        }
+    }
+
+    pub fn is_blue(&self) -> bool {
+        if self.enemy_fraction.trim() == "blue" {
+            true
+        } else {
+            false
+        }
+    }
+}
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct LoggerCfg {
@@ -55,6 +93,7 @@ pub struct EstimatorConfig {
 /// 总配置
 #[derive(Deserialize, Debug, Clone, PartialEq)]
 pub struct RbtCfg {
+    pub game_cfg: GameCfg,
     pub general_cfg: GeneralCfg,
     pub detector_cfg: DetectorCfg,
     pub cam_cfg: CamCfg,
@@ -91,38 +130,5 @@ impl RbtCfg {
             ));
         }
         Ok(())
-    }
-}
-
-impl Default for RbtCfg {
-    fn default() -> Self {
-        tracing::warn!("Failed to find cfg file, use default cfg instead");
-        RbtCfg {
-            general_cfg: GeneralCfg {
-                img_dbg: false,
-                bullet_speed: 23.0,
-            },
-            detector_cfg: DetectorCfg {
-                armor_detect_model_path: "model/armor/best_fp16_norm.onnx".to_string(),
-                armor_detect_engine_path: "/model/armor/".to_string(),
-                buff_detect_model_path: "model/buff/best.onnx".to_string(),
-                camera_img_width: 1280,
-                camera_img_height: 720,
-                infer_img_width: 640,
-                infer_img_height: 360,
-                infer_full_height: 384,
-                confidence_threshold: 0.8,
-                ort_ep: "OpenVINO".to_string(),
-            },
-            cam_cfg: CamCfg {
-                cam_k: [1800.0, 0.0, 320.0, 0.0, 1800.0, 162.0, 0.0, 0.0, 1.0],
-            },
-            logger_cfg: LoggerCfg {
-                console_log_filter: "info,ort=warn".to_string(),
-                file_log_filter: "debug,ort=info".to_string(),
-                console_log_enable: true,
-                file_log_enable: true,
-            },
-        }
     }
 }

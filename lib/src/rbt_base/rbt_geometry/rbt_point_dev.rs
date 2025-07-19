@@ -1,6 +1,6 @@
 // 目前暂时考虑尽量使用基础类型来表示数据，在方法中转换为 nalgebra 进行转换，并返回基础数据类型
 
-use crate::rbt_err::{RbtError, RbtResult};
+use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use std::cmp::PartialEq;
 use tracing::{debug, error, warn};
 

@@ -12,3 +12,4 @@ tracing = { workspace = true }
 nalgebra = { workspace = true }
 rerun = { workspace = true }
 image = { workspace = true }
+tracing-appender = {workspace = true}

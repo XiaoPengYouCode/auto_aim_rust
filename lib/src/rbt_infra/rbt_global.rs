@@ -10,7 +10,7 @@ pub static FAILED_COUNT: AtomicU32 = AtomicU32::new(0);
 
 lazy_static! {
     pub static ref GENERIC_RBT_CFG: RwLock<RbtCfg> = {
-        let cfg = { RbtCfg::from_toml().unwrap_or_default() };
+        let cfg = { RbtCfg::from_toml().expect("请检查配置文件路径与内容") };
         RwLock::new(cfg)
     };
 }

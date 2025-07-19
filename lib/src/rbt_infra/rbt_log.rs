@@ -3,8 +3,8 @@ use tracing_appender::non_blocking::WorkerGuard;
 use tracing_subscriber::Layer;
 use tracing_subscriber::{fmt::layer, layer::SubscriberExt, registry, util::SubscriberInitExt};
 
-use crate::rbt_err::RbtResult;
-use crate::rbt_global::GENERIC_RBT_CFG;
+use crate::rbt_infra::rbt_err::RbtResult;
+use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 
 /// 注意函数的调用方只需要维持 Option 就行
 /// 可以用于区分是否存在 appender 守护

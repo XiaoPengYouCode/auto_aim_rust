@@ -10,8 +10,8 @@ use tokio::task::JoinHandle;
 use tokio::time::{Duration, Instant, sleep_until};
 use tracing::{error, info, warn};
 
-pub use lib::rbt_err::RbtResult;
 pub use lib::rbt_infra::rbt_cfg;
+pub use lib::rbt_infra::rbt_err::RbtResult;
 
 use self::rbt_cfg::RbtCfg;
 

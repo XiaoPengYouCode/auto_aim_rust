@@ -1,11 +1,13 @@
 #![allow(unused)]
 
 use crate::rbt_base::rbt_geometry::rbt_point_dev::{RbtImgPoint2, RbtImgPoint2Coord};
-use crate::rbt_err::{RbtError, RbtResult};
-use crate::rbt_mod::rbt_enemy_dev::EnemyId;
+use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
+use crate::rbt_mod::rbt_enemy::{EnemyArmorType, EnemyId};
 use crate::rbt_mod::rbt_generic::ImgCoord;
 use nalgebra as na;
 use tracing::error;
+
+pub type ArmorType = EnemyArmorType;
 pub type ArmorId = EnemyId;
 
 #[derive(Debug, Clone)]
@@ -105,12 +107,12 @@ impl ArmorStaticMsg {
 }
 
 #[derive(Debug)]
-pub enum ArmorClass {
+pub enum ArmorLabel {
     Red(u8),
     Blue(u8),
 }
 
-impl ArmorClass {
+impl ArmorLabel {
     pub fn from_yolo_output_idx(idx: usize) -> RbtResult<Self> {
         match idx {
             0..=17 => Ok(Self::Blue((idx) as u8)),
@@ -124,14 +126,14 @@ impl ArmorClass {
 
     fn armor_color(&self) -> ArmorColor {
         match self {
-            ArmorClass::Blue(_) => ArmorColor::Blue,
-            ArmorClass::Red(_) => ArmorColor::Red,
+            ArmorLabel::Blue(_) => ArmorColor::Blue,
+            ArmorLabel::Red(_) => ArmorColor::Red,
         }
     }
 
     fn armor_type(&self) -> ArmorType {
         match self {
-            ArmorClass::Blue(idx) | ArmorClass::Red(idx) => {
+            ArmorLabel::Blue(idx) | ArmorLabel::Red(idx) => {
                 if *idx == 1 {
                     ArmorType::Large
                 } else {
@@ -142,11 +144,11 @@ impl ArmorClass {
     }
 }
 
-impl std::fmt::Display for ArmorClass {
+impl std::fmt::Display for ArmorLabel {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ArmorClass::Blue(u8) => write!(f, "Blue{}", u8),
-            ArmorClass::Red(u8) => write!(f, "Red{}", u8),
+            ArmorLabel::Blue(u8) => write!(f, "Blue{}", u8),
+            ArmorLabel::Red(u8) => write!(f, "Red{}", u8),
         }
     }
 }
@@ -208,17 +210,12 @@ impl ArmorPointMsg {
 }
 
 pub struct ArmorRaceMsg {
-    armor_class: ArmorClass,
+    armor_class: ArmorLabel,
 }
 
 pub enum ArmorColor {
     Red,
     Blue,
-}
-
-pub enum ArmorType {
-    Small,
-    Large,
 }
 
 impl ArmorType {
