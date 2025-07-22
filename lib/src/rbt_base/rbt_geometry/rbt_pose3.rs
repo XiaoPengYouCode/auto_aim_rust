@@ -42,13 +42,13 @@ impl RbtPoseCoordSys {
     }
 }
 
-pub struct RbtPose {
+pub struct RbtPose3 {
     pub translation: na::Point3<f64>, // 位置
     pub rotation: na::Rotation3<f64>, // 姿态
     coord_sys: RbtPoseCoordSys,
 }
 
-impl RbtPose {
+impl RbtPose3 {
     pub fn armor_visualize(&self, rec: &rr::RecordingStream, idx: usize) -> RbtResult<()> {
         let armor_translation_rr = [
             self.translation.x as f32,
@@ -85,7 +85,7 @@ impl RbtPose {
     }
 }
 
-impl RbtPose {
+impl RbtPose3 {
     pub fn new(
         translation: na::Point3<f64>,
         rotation: na::Rotation3<f64>,

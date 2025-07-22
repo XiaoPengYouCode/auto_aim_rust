@@ -1,5 +1,5 @@
 [package]
-name = "test_coord"
+name = "test_serial"
 version = "0.1.0"
 edition.workspace = true
 authors.workspace = true
@@ -7,6 +7,6 @@ license.workspace = true
 
 [dependencies]
 lib = { path = "../../lib" }
-tokio = { workspace = true }
-tracing = { workspace = true }
-nalgebra = { workspace = true }
+tokio = {workspace = true}
+tracing = {workspace = true}
+tracing-subscriber = {workspace = true}

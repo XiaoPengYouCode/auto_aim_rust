@@ -1,5 +1,11 @@
 [workspace]
-members = ["lib", "app/auto_aim_async", "app/ippe_benchmark", "app/single_frame_dev", "app/test_coord"]
+members = [
+    "lib",
+    "app/auto_aim_async",
+    "app/ippe_benchmark",
+    "app/single_frame_dev",
+    "app/test_serial"
+]
 default-members = ["lib"]
 resolver = "3"
 
@@ -41,6 +47,3 @@ tokio-serial = "5.4.5"
 chrono = "0.4.41"
 notify = "8.0.0"
 crossbeam-queue = "0.3.12"
-
-# for enum extern feature
-strum = { version = "0.27.1", features = ["derive"] }

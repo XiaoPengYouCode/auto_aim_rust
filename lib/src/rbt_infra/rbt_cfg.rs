@@ -2,8 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::path::Path;
 
 use crate::rbt_bail_error;
-use crate::rbt_base::rbt_game::EnemyFaction;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
+use crate::rbt_mod::rbt_enemy::EnemyFaction;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GameCfg {
@@ -12,10 +12,10 @@ pub struct GameCfg {
 
 impl GameCfg {
     pub fn enemy_fraction(&self) -> Option<EnemyFaction> {
-        if self.enemy_fraction.trim() == "blue" {
-            Some(EnemyFaction::Blue)
-        } else if self.enemy_fraction.trim() == "red" {
-            Some(EnemyFaction::Red)
+        if self.enemy_fraction.trim() == "B" {
+            Some(EnemyFaction::B)
+        } else if self.enemy_fraction.trim() == "R" {
+            Some(EnemyFaction::R)
         } else {
             eprintln!("请检查 game_cfg/enemy_fraction 设置");
             None
@@ -23,12 +23,12 @@ impl GameCfg {
     }
 
     pub fn self_fraction(&self) -> Option<EnemyFaction> {
-        if self.enemy_fraction.trim() == "blue" {
-            Some(EnemyFaction::Red)
-        } else if self.enemy_fraction.trim() == "red" {
-            Some(EnemyFaction::Blue)
+        if let Some(fraction) = self.enemy_fraction() {
+            match fraction {
+                EnemyFaction::B => Some(EnemyFaction::R),
+                EnemyFaction::R => Some(EnemyFaction::B),
+            }
         } else {
-            eprintln!("请检查 game_cfg/enemy_fraction 设置");
             None
         }
     }

@@ -4375,7 +4375,6 @@ dependencies = [
  "ort",
  "rerun",
  "serde",
- "strum 0.27.1",
  "thiserror 2.0.12",
  "tokio",
  "tokio-serial",
@@ -4768,7 +4767,7 @@ dependencies = [
  "once_cell",
  "rustc-hash 1.1.0",
  "spirv",
- "strum 0.26.3",
+ "strum",
  "thiserror 2.0.12",
  "unicode-ident",
 ]
@@ -6898,7 +6897,7 @@ dependencies = [
  "re_video",
  "rfd",
  "serde",
- "strum_macros 0.26.4",
+ "strum_macros",
  "uuid",
  "wasm-bindgen-futures",
 ]
@@ -7164,7 +7163,7 @@ dependencies = [
  "paste",
  "raw-cpuid",
  "static_assertions",
- "strum 0.26.3",
+ "strum",
  "to_method",
  "zerocopy 0.7.35",
 ]
@@ -7566,8 +7565,8 @@ dependencies = [
  "ron",
  "serde",
  "smallvec 1.15.1",
- "strum 0.26.3",
- "strum_macros 0.26.4",
+ "strum",
+ "strum_macros",
  "sublime_fuzzy",
  "time",
  "url",
@@ -7959,8 +7958,8 @@ dependencies = [
  "serde",
  "serde-wasm-bindgen",
  "serde_json",
- "strum 0.26.3",
- "strum_macros 0.26.4",
+ "strum",
+ "strum_macros",
  "tap",
  "thiserror 1.0.69",
  "wasm-bindgen",
@@ -9113,16 +9112,7 @@ version = "0.26.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fec0f0aef304996cf250b31b5a10dee7980c85da9d759361292b8bca5a18f06"
 dependencies = [
- "strum_macros 0.26.4",
-]
-
-[[package]]
-name = "strum"
-version = "0.27.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f64def088c51c9510a8579e3c5d67c65349dcf755e5479ad3d010aa6454e2c32"
-dependencies = [
- "strum_macros 0.27.1",
+ "strum_macros",
 ]
 
 [[package]]
@@ -9130,19 +9120,6 @@ name = "strum_macros"
 version = "0.26.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c6bee85a5a24955dc440386795aa378cd9cf82acd5f764469152d2270e581be"
-dependencies = [
- "heck",
- "proc-macro2",
- "quote",
- "rustversion",
- "syn",
-]
-
-[[package]]
-name = "strum_macros"
-version = "0.27.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c77a8c5abcaf0f9ce05d62342b7d298c346515365c36b673df4ebe3ced01fde8"
 dependencies = [
  "heck",
  "proc-macro2",
@@ -9277,13 +9254,13 @@ dependencies = [
 ]
 
 [[package]]
-name = "test_coord"
+name = "test_serial"
 version = "0.1.0"
 dependencies = [
  "lib",
- "nalgebra 0.33.2",
  "tokio",
  "tracing",
+ "tracing-subscriber",
 ]
 
 [[package]]

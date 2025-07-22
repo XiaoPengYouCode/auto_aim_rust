@@ -5,20 +5,25 @@ use ort::{
     session::{Session, SessionOutputs},
     value::TensorRef,
 };
-use strum::EnumCount;
+use std::cmp::PartialEq;
+use std::collections::HashMap;
 use tracing::{error, info};
 
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
-use crate::rbt_mod::rbt_armor::ArmorLabel;
+use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
+use crate::rbt_mod::rbt_armor::{ArmorId, ArmorLabel};
+use crate::rbt_mod::rbt_detector::rbt_yolo::{BBox, YOLO_LABEL_TABLE};
+use crate::rbt_mod::rbt_detector::rbt_yolo::{intersection, union};
 use crate::rbt_mod::rbt_enemy::EnemyId;
 use crate::rbt_mod::rbt_solver::RbtSolver;
 use crate::{
     rbt_infra::rbt_cfg,
-    rbt_mod::rbt_armor::ArmorStaticMsg,
-    rbt_mod::rbt_generic::ImgCoord, // Import ImgCoord for image coordinates
+    rbt_mod::rbt_armor::detected_armor::DetectedArmor,
 };
+use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
 
-pub mod rbt_detect_proc;
+pub mod rbt_yolo;
+pub mod rbt_frame;
 
 pub struct ArmorDetector {
     img: DynamicImage,
@@ -69,7 +74,7 @@ impl ArmorDetector {
     pub fn post_process(
         &self,
         outputs: &SessionOutputs,
-    ) -> ort::Result<Box<[Vec<ArmorStaticMsg>]>> {
+    ) -> ort::Result<HashMap<EnemyId, Vec<DetectedArmor>>> {
         // // f32
         let output = outputs["output0"]
             .try_extract_array::<f32>()?
@@ -89,6 +94,8 @@ impl ArmorDetector {
             if prob < 0.8 {
                 continue;
             }
+            dbg!(&row);
+            dbg!(&row.len());
             let xc = row[0];
             let yc = row[1];
             let w = row[2];
@@ -121,34 +128,31 @@ impl ArmorDetector {
         }
 
         // 收集结果
-        // let mut armors = Vec::<ArmorStaticMsg>::with_capacity(boxes.len());
-        let mut armors: Box<[Vec<ArmorStaticMsg>]> =
-            vec![vec![]; EnemyId::COUNT].into_boxed_slice();
+        let mut armors = HashMap::new();
 
         for (_, class_id, _, idx) in result {
-            let armor_class = ArmorLabel::from_yolo_output_idx(class_id).unwrap();
-            let armor_index = match armor_class {
-                ArmorLabel::Red(label_idx) | ArmorLabel::Blue(label_idx) => {
-                    match label_idx {
-                        1 => 0,        // hero1
-                        2 => 1,        // engineer2
-                        3 => 2,        // infanty3
-                        4 => 3,        // infanty4
-                        7 => 4,        // sentry
-                        8 => 5,        // outpost
-                        _ => continue, // 不是的话直接跳过
-                    }
-                }
-            };
-            let armor = ArmorStaticMsg::new(
-                ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]),
-                ImgCoord::from_f32(output[[idx, 40]], output[[idx, 41]]),
-                ImgCoord::from_f32(output[[idx, 42]], output[[idx, 43]]),
-                ImgCoord::from_f32(output[[idx, 44]], output[[idx, 45]]),
-                ImgCoord::from_f32(output[[idx, 46]], output[[idx, 47]]),
+            dbg!(&class_id);
+            let armor_label = &YOLO_LABEL_TABLE[class_id];
+            if armor_label.color()
+                == &GENERIC_RBT_CFG
+                    .read()
+                    .unwrap()
+                    .game_cfg
+                    .self_fraction()
+                    .unwrap()
+            {
+                continue;
+            }
+            let armor_id = armor_label.id().clone();
+            let armor = DetectedArmor::new(
+                RbtImgPoint2::new_screen_pixel(output[[idx, 0]], output[[idx, 1]]),
+                RbtImgPoint2::new_screen_pixel(output[[idx, 40]], output[[idx, 41]]),
+                RbtImgPoint2::new_screen_pixel(output[[idx, 42]], output[[idx, 43]]),
+                RbtImgPoint2::new_screen_pixel(output[[idx, 44]], output[[idx, 45]]),
+                RbtImgPoint2::new_screen_pixel(output[[idx, 46]], output[[idx, 47]]),
             );
 
-            armors[armor_index].push(armor);
+            armors.entry(armor_id).or_insert(Vec::new()).push(armor);
         }
         Ok(armors)
     }
@@ -166,7 +170,7 @@ impl ArmorDetector {
 /// iGPU + OPENVINO + oneAPI + oneDNN: FP16 10ms
 /// CUDA 12.6: FP16 5ms
 /// TensorRT 10: FP16 2.5ms
-pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<Box<[Vec<ArmorStaticMsg>]>> {
+pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<HashMap<EnemyId, Vec<DetectedArmor>>> {
     // build session
     let session_builder = Session::builder()?;
     let mut session = if cfg.ort_ep == "TensorRT" {
@@ -217,46 +221,4 @@ pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<Box<[Vec<ArmorStaticMsg
     info!("Postprocessing time elapsed: {:?}", elapsed);
 
     Ok(result)
-}
-
-/// BoundingBox yolo模型候选框
-/// 因为目前跟神经网络交互的部分暂时还是 f32，所以暂时没有提供泛型实现
-#[derive(Debug, Clone, Copy)]
-pub struct BBox(f32, f32, f32, f32);
-
-impl BBox {
-    pub fn new(x1: f32, y1: f32, x2: f32, y2: f32) -> Self {
-        BBox(x1, y1, x2, y2)
-    }
-
-    #[inline(always)]
-    fn x1(&self) -> f32 {
-        self.0
-    }
-
-    #[inline(always)]
-    fn y1(&self) -> f32 {
-        self.1
-    }
-
-    #[inline(always)]
-    fn x2(&self) -> f32 {
-        self.2
-    }
-
-    #[inline(always)]
-    fn y2(&self) -> f32 {
-        self.3
-    }
-}
-
-pub fn intersection(box1: &BBox, box2: &BBox) -> f32 {
-    (box1.x2().min(box2.x2()) - box1.x1().max(box2.x1()))
-        * (box1.y2().min(box2.y2()) - box1.y1().max(box2.y1()))
-}
-
-pub fn union(box1: &BBox, box2: &BBox) -> f32 {
-    ((box1.x2() - box1.x1()) * (box1.y2() - box1.y1()))
-        + ((box2.x2() - box2.x1()) * (box2.y2() - box2.y1()))
-        - intersection(box1, box2)
 }

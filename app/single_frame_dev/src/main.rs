@@ -22,7 +22,7 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
     let cfg = RbtCfg::from_toml()?;
     // todo!(这里直接使用了 lazy_static 中读取的配置，还没有替换成最新的 rbt_cfg)
     let _logger_guard = logger_init().await?;
-    let rec = rr::RecordingStreamBuilder::new("AutoAim").spawn()?;
+    let rec = rr::RecordingStreamBuilder::new("AutoAim").save("rerun-log/test.rrd")?;
     let enemy_fraction = cfg.game_cfg.enemy_fraction().unwrap();
     let enemy_db = EnemyDatabase::new(enemy_fraction);
 
@@ -42,10 +42,10 @@ async fn main() -> RbtResult<()> {
     // 执行 detector
     let detector_result = pipeline(&auto_aim_handle.cfg.detector_cfg)?;
 
-    let cam_k = auto_aim_handle.cfg.cam_cfg.cam_k();
-
-    let enemys = enemys_solver(detector_result, &cam_k, &auto_aim_handle.rec)?;
-    dbg!(enemys);
+    // let cam_k = auto_aim_handle.cfg.cam_cfg.cam_k();
+    //
+    // let enemys = enemys_solver(detector_result, &cam_k, &auto_aim_handle.rec)?;
+    // dbg!(enemys);
 
     Ok(())
 }

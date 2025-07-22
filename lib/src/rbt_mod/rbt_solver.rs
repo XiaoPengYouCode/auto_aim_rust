@@ -1,13 +1,13 @@
-use crate::rbt_base::rbt_geometry::rbt_coord_2d::RbtCylindricalCoord2;
-use crate::rbt_base::rbt_geometry::rbt_coord_dev::{RbtPose, RbtPoseCoordSys};
-use crate::rbt_base::rbt_geometry::rbt_line_2d::{RbtLine2, find_intersection};
+use crate::rbt_base::rbt_geometry::rbt_cylindrical3::RbtCylindricalPoint3;
+use crate::rbt_base::rbt_geometry::rbt_pose3::{RbtPose3, RbtPoseCoordSys};
+use crate::rbt_base::rbt_geometry::rbt_line2::{RbtLine2, find_intersection};
 use crate::rbt_base::rbt_ippe::ArmorPnpSolver;
 use crate::rbt_infra::rbt_cfg;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
-use crate::rbt_mod::rbt_armor::ArmorStaticMsg;
+use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
 use crate::rbt_mod::rbt_enemy::EnemyId;
 use nalgebra::Vector2;
-use strum::EnumCount;
+use std::collections::HashMap;
 use tracing::{debug, error, info, warn};
 
 pub mod rbt_orientation_solver;
@@ -34,7 +34,7 @@ enum RbtClass {
 
 #[derive(Debug)]
 pub struct RbtSolver {
-    armors: Vec<ArmorStaticMsg>,
+    armors: Vec<DetectedArmor>,
 }
 
 impl RbtSolver {
@@ -46,38 +46,22 @@ impl RbtSolver {
 
 /// enemys_solver全流程
 pub fn enemys_solver(
-    detector_result: Box<[Vec<ArmorStaticMsg>]>,
+    detector_result: HashMap<EnemyId, Vec<DetectedArmor>>,
     cam_k: &na::Matrix3<f64>,
     rec: &rr::RecordingStream,
-) -> RbtResult<Vec<(i32, RbtCylindricalCoord2)>> {
-    let mut enemys = Vec::<(i32, RbtCylindricalCoord2)>::with_capacity(6);
-    for (index, enemy_armors) in detector_result.iter().enumerate() {
+) -> RbtResult<Vec<(EnemyId, RbtCylindricalPoint3)>> {
+    let mut enemys = Vec::<(EnemyId, RbtCylindricalPoint3)>::with_capacity(6);
+    for (enemy_id, enemy_armors) in detector_result.into_iter() {
         let detected_enemy_armors_num = enemy_armors.len();
         if detected_enemy_armors_num == 0 {
             continue; // 该帧没有看到该兵种的装甲板，提前退出
         }
 
-        let enemy_id = match index {
-            0 => 1,
-            1 => 2,
-            2 => 3,
-            3 => 4,
-            4 => 5,
-            5 => 6,
-            _ => -1,
-        };
-        info!("看到了 {detected_enemy_armors_num} 块 {enemy_id} 号装甲板");
-
         // 针对每一块装甲板求解pnp
         let mut pnp_results = Vec::with_capacity(detected_enemy_armors_num);
         for armor in enemy_armors {
             let armor_key_points = armor.cornet_points();
-            let armor_key_points_na = [
-                armor_key_points[0].to_na_point(),
-                armor_key_points[1].to_na_point(),
-                armor_key_points[2].to_na_point(),
-                armor_key_points[3].to_na_point(),
-            ];
+            let armor_key_points_na = armor_key_points.map(|p| p.into());
 
             let pnp_solver = ArmorPnpSolver::new().ok_or(RbtError::StringError(
                 "Failed to create ArmorPnpSolver Instant".to_string(),
@@ -91,7 +75,7 @@ pub fn enemys_solver(
 
         let mut armors_base_pose_xyz = vec![];
         for pose in pnp_results.iter() {
-            let armor_cam_pose = RbtPose::new(
+            let armor_cam_pose = RbtPose3::new(
                 <na::Point3<f64>>::from(pose.translation.vector),
                 pose.rotation.to_rotation_matrix(),
                 RbtPoseCoordSys::Camera,
@@ -118,7 +102,7 @@ pub fn enemys_solver(
         let enemy_center_xy = solve_enemy_center(&armors_line_2d)
             .ok_or(RbtError::StringError("Failed to solve enemy center".into()))?;
 
-        let armor_base_cylindrical = RbtCylindricalCoord2::from_xy(enemy_center_xy);
+        let armor_base_cylindrical = RbtCylindricalPoint3::from_xy(enemy_center_xy);
         enemys.push((enemy_id, armor_base_cylindrical));
 
         // --- 可视化 ---

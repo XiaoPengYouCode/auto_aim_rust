@@ -1,7 +1,6 @@
-use crate::rbt_base::rbt_game::EnemyFaction;
 use crate::rbt_mod::rbt_solver::RbtSolver;
 use std::collections::HashMap;
-use strum::EnumCount;
+use std::fmt::Display;
 
 /// 描述敌方装甲板大或者小
 pub enum EnemyArmorType {
@@ -9,7 +8,8 @@ pub enum EnemyArmorType {
     Large,
 }
 
-#[derive(Debug, Eq, PartialEq, Hash, EnumCount)]
+/// 用于描述装甲板/敌方车辆的唯一标记型 ID
+#[derive(Clone, Copy, Eq, PartialEq, Hash)]
 pub enum EnemyId {
     Hero1,
     Engineer2,
@@ -17,40 +17,69 @@ pub enum EnemyId {
     Infantry4,
     Sentry7,
     Outpost8,
+    Invalid,
+}
+
+impl Display for EnemyId {
+    /// 手写反射哈哈哈
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnemyId::Hero1 => write!(f, "Hero 1"),
+            EnemyId::Engineer2 => write!(f, "Engineer 2"),
+            EnemyId::Infantry3 => write!(f, "Infantry3"),
+            EnemyId::Infantry4 => write!(f, "Infantry4"),
+            EnemyId::Sentry7 => write!(f, "Sentry 7"),
+            EnemyId::Outpost8 => write!(f, "Outpost 8"),
+            EnemyId::Invalid => write!(f, "Invalid"),
+        }
+    }
+}
+
+/// 描述敌方阵营
+#[derive(PartialEq, Eq)]
+pub enum EnemyFaction {
+    R,
+    B,
+}
+
+impl Display for EnemyFaction {
+    /// 同样手写反射
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            EnemyFaction::R => write!(f, "R"),
+            EnemyFaction::B => write!(f, "B"),
+        }
+    }
 }
 
 /// 描述装甲板的物理布局
 #[derive(Debug, Clone, PartialEq)]
 pub enum ArmorLayout {
     // 适用于大多数车辆的对称4装甲板布局
-    Symmetric4 {
-        layout: [(f64, f64); 4],
-    },
-    // 适用于前哨站的3装甲板布局
-    Tripod3 {
-        // 对于前哨站这种3个装甲板位置相同的特殊情况，可以简化
-        // 如果3个位置也不同，则使用 positions: [(f64, f64); 3]
-        radius: f64,
-        height: f64,
-    },
+    Symmetric4 { layout: [(f64, f64); 4] },
+    // 适用于前哨站的 3 块等距装甲板布局
+    Tripod3 { radius: f64, height: f64 },
 }
 
+/// 用于描述一个敌方车辆的全部信息
 /// A_N 代表装甲板数量，其他兵种为 4, 前哨站为 3
 pub struct Enemy {
-    // 装甲板类型（大小装甲板）
+    /// 装甲板类型（大小装甲板）
     armor_type: EnemyArmorType,
     armor_id: EnemyId,
-    // 选择第一次看到该车的第一块装甲板为 idx = 0
+    /// 选择第一次看到该车的第一块装甲板为 idx = 0
     armor_layout: ArmorLayout,
     enemy_solver: RbtSolver,
 }
 
 pub struct EnemyDatabase {
-    enemy_faction: EnemyFaction, // 敌方阵营
+    /// 敌方阵营
+    enemy_faction: EnemyFaction,
     enemys: HashMap<EnemyId, Enemy>,
 }
 
 impl EnemyDatabase {
+    /// 根据比赛情况，直接描述所有的车辆
     pub fn new(enemy_faction: EnemyFaction) -> Self {
         let mut enemy_database = Self {
             enemy_faction,
@@ -131,7 +160,7 @@ impl EnemyDatabase {
         self.enemys.get(id)
     }
 
-    /// 获取所有蓝图的迭代器
+    /// 获取所有敌人的迭代器
     pub fn iter(&self) -> impl Iterator<Item = (&EnemyId, &Enemy)> {
         self.enemys.iter()
     }

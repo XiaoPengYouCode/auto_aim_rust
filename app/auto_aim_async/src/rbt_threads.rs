@@ -5,11 +5,10 @@ use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
-use lib::rbt_mod::rbt_armor::ArmorStaticMsg;
+use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
 use lib::rbt_mod::rbt_detector::BBox;
-use lib::rbt_mod::rbt_detector::rbt_detect_proc::{letterbox, nms};
-use lib::rbt_mod::rbt_frame::{RbtFrame, RbtFrameStage};
-use lib::rbt_mod::rbt_generic::ImgCoord;
+use lib::rbt_mod::rbt_detector::rbt_yolo::{letterbox, nms};
+use lib::rbt_mod::rbt_detector::rbt_frame::{RbtFrame, RbtFrameStage};
 
 use lib::rbt_infra::rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING};
 use lib::rbt_infra::rbt_queue_async::RbtQueueAsync;
@@ -182,9 +181,9 @@ pub async fn post_process(frame: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()>
                     let result = nms(boxes);
 
                     // 收集装甲板信息
-                    let mut armors = Vec::<ArmorStaticMsg>::with_capacity(result.len());
+                    let mut armors = Vec::<ArmorKeyPoints>::with_capacity(result.len());
                     for (_, _, _, idx) in result {
-                        let armor = ArmorStaticMsg::new(
+                        let armor = ArmorKeyPoints::new(
                             ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]), // 中心点坐标
                             ImgCoord::from_f32(output[[idx, 40]], output[[idx, 41]]), // 特征点 1
                             ImgCoord::from_f32(output[[idx, 42]], output[[idx, 43]]), // 特征点 2

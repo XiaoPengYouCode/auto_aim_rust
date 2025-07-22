@@ -12,7 +12,7 @@ use crate::rbt_threads::{infer, post_process, pre_process};
 use lib::rbt_infra::rbt_err::RbtResult;
 use lib::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 use lib::rbt_infra::rbt_queue_async::RbtQueueAsync;
-use lib::rbt_mod::rbt_frame::RbtFrame;
+use lib::rbt_mod::rbt_detector::rbt_frame::RbtFrame;
 
 pub async fn multi_thread_pipeline(rec: rr::RecordingStream) -> RbtResult<()> {
     let pre_infer_queue = Arc::new(RbtQueueAsync::<RbtFrame>::new(1));
