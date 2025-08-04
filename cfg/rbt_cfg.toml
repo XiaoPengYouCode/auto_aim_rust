@@ -1,4 +1,5 @@
 # rbt_cfg.toml
+# todo!(需要开发一个检查无用字段功能，防止修改未使用参数来调整自瞄效果)
 
 [game_cfg]
 # 电控发送优先级大于自己设置的优先级
@@ -17,6 +18,7 @@ img_dbg = false
 bullet_speed = 24.0
 
 [detector_cfg]
+# 神经网络模型分别放在 model/armor 和 model/buff 目录下
 armor_detect_model_path = "./model/armor/best_fp16_norm.onnx"
 armor_detect_engine_path = "./model/armor"
 buff_detect_model_path = "./model/buff/buff.onnx"
@@ -31,3 +33,6 @@ ort_ep = "OpenVINO"
 [cam_cfg]
 cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]
 
+[estimator_cfg]
+armor_lost_wait_duration_ms = 100
+enemy_lost_wait_duration_ms = 1000

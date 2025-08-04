@@ -6,5 +6,6 @@ pub mod rbt_rerun;
 // 基础库（math, geometry）
 pub mod rbt_err;
 // 自定义错误类型
+pub mod rbt_comm;
 pub mod rbt_global;
 // rerun virturalization tools

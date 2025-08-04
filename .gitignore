@@ -1,5 +1,5 @@
 /target
-/model/*
+/model
 /.idea
 /.vscode
 /log/*

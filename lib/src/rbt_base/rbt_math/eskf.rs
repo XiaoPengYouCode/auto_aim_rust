@@ -1,4 +1,7 @@
-pub struct Eskf<const S_D: usize, const M_D: usize>
+use crate::rbt_mod::rbt_estimator::EstimatorStateMachine;
+
+#[derive(Debug, Clone)]
+pub struct StrategyESKF<const S_D: usize, const M_D: usize>
 where
     na::Const<S_D>: na::DimName,
     na::Const<M_D>: na::DimName,
@@ -10,7 +13,7 @@ where
     pub dt: f64,                               // 时间步长
 }
 
-impl<const S_D: usize, const M_D: usize> Eskf<S_D, M_D>
+impl<const S_D: usize, const M_D: usize> StrategyESKF<S_D, M_D>
 where
     na::Const<S_D>: na::DimName,
     na::Const<M_D>: na::DimName,
@@ -21,7 +24,7 @@ where
         r: na::SMatrix<f64, M_D, M_D>, // 传感器噪声协方差矩阵
         dt: f64,
     ) -> Self {
-        Eskf {
+        StrategyESKF {
             error_estimate: na::SVector::<f64, S_D>::zeros(),
             error_estimate_p: initial_p,
             q,
@@ -30,11 +33,16 @@ where
         }
     }
 
-    pub fn predict<M>(&mut self, model: &M, nominal_state: &M::NominalState, input: &M::Input)
-    where
-        M: EskfDynamic<S_D, M_D>,
+    pub fn predict<M>(
+        &mut self,
+        model: &M,
+        nominal_state: &M::NominalState,
+        input: &M::Input,
+        strategy: &M::Strategy,
+    ) where
+        M: StrategyESKFDynamic<S_D, M_D>,
     {
-        let f = model.state_transition_matrix_f(nominal_state, self.dt, input);
+        let f = model.state_transition_matrix_f(nominal_state, self.dt, input, strategy);
 
         let q_discrete = self.q * self.dt;
 
@@ -49,17 +57,18 @@ where
         model: &M,
         nominal_state: &mut M::NominalState,
         measurement: &M::Measurement,
+        strategy: &M::Strategy,
     ) where
-        M: EskfDynamic<S_D, M_D>,
+        M: StrategyESKFDynamic<S_D, M_D>,
     {
-        let h = model.measurement_matrix_h(nominal_state);
+        let h = model.measurement_matrix_h(nominal_state, strategy);
 
         let s = h * self.error_estimate_p * h.transpose() + self.r;
 
         if let Some(s_inv) = s.try_inverse() {
             let kalman_gain = &self.error_estimate_p * h.transpose() * s_inv;
 
-            let y = model.measurement_residual_y(nominal_state, measurement);
+            let y = model.measurement_residual_y(nominal_state, measurement, strategy);
 
             self.error_estimate = kalman_gain * y;
 
@@ -70,7 +79,7 @@ where
             self.error_estimate_p =
                 (self.error_estimate_p + self.error_estimate_p.transpose()) * 0.5_f64;
 
-            *nominal_state = model.inject_error(nominal_state.clone(), &self.error_estimate);
+            model.inject_error(nominal_state, &self.error_estimate, strategy);
             self.error_estimate.fill(na::convert(0.0));
         } else {
             tracing::error!("Failed to solve s inverse")
@@ -84,13 +93,14 @@ where
 }
 
 /// all the Eskf instant need impl this trait
-pub trait EskfDynamic<const S_D: usize, const M_D: usize> {
+pub trait StrategyESKFDynamic<const S_D: usize, const M_D: usize> {
     // 定义模型可能需要的输入类型 (例如：陀螺仪和加速度计读数)
     type Input;
     // 定义模型可能产生的名义状态类型 (例如：四元数)
     type NominalState: Clone;
     // 定义测量值的类型
     type Measurement;
+    type Strategy;
 
     /// 根据输入更新名义状态
     fn update_nominal_state(
@@ -98,6 +108,7 @@ pub trait EskfDynamic<const S_D: usize, const M_D: usize> {
         nominal_state: &mut Self::NominalState, // 需要传入系统的状态变量可变引用
         dt: f64,
         u: &Self::Input,
+        strategy: &Self::Strategy,
     );
 
     /// 计算状态转移矩阵 F
@@ -106,12 +117,14 @@ pub trait EskfDynamic<const S_D: usize, const M_D: usize> {
         nominal_state: &Self::NominalState,
         dt: f64,
         u: &Self::Input,
+        strategy: &Self::Strategy,
     ) -> na::SMatrix<f64, S_D, S_D>;
 
     /// 计算测量矩阵 H
     fn measurement_matrix_h(
         &self,
         nominal_state: &Self::NominalState,
+        strategy: &Self::Strategy,
     ) -> na::SMatrix<f64, M_D, S_D>;
 
     /// 计算测量残差 y = z - h(x)
@@ -119,12 +132,14 @@ pub trait EskfDynamic<const S_D: usize, const M_D: usize> {
         &self,
         nominal_state: &Self::NominalState,
         z: &Self::Measurement,
+        strategy: &Self::Strategy,
     ) -> na::SVector<f64, M_D>;
 
     /// 将计算出的误差状态注入回名义状态，并重置误差状态
     fn inject_error(
         &self,
-        nominal_state: Self::NominalState,
+        nominal_state: &mut Self::NominalState,
         error_estimate: &na::SVector<f64, S_D>,
-    ) -> Self::NominalState;
+        strategy: &Self::Strategy,
+    );
 }

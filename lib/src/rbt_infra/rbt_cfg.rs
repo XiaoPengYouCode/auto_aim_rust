@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::rbt_bail_error;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
-use crate::rbt_mod::rbt_enemy::EnemyFaction;
+use crate::rbt_mod::rbt_estimator::rbt_enemy_model::EnemyFaction;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GameCfg {
@@ -85,9 +85,17 @@ impl CamCfg {
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
-pub struct EstimatorConfig {
-    top1_activate_w: f64,
-    top2_activate_w: f64,
+pub struct EstimatorCfg {
+    armor_lost_wait_duration_ms: u64,
+    // top1_activate_w: f64,
+    // top2_activate_w: f64,
+}
+
+impl EstimatorCfg {
+    #[inline(always)]
+    pub fn lost_wait_duration_ms(&self) -> tokio::time::Duration {
+        tokio::time::Duration::from_millis(self.armor_lost_wait_duration_ms)
+    }
 }
 
 /// 总配置
@@ -98,6 +106,7 @@ pub struct RbtCfg {
     pub detector_cfg: DetectorCfg,
     pub cam_cfg: CamCfg,
     pub logger_cfg: LoggerCfg,
+    pub estimator_cfg: EstimatorCfg,
 }
 
 impl RbtCfg {

@@ -31,3 +31,4 @@ tokio-serial = { workspace = true }
 chrono = { workspace = true }
 notify = { workspace = true }
 crossbeam-queue = { workspace = true }
+strum = { workspace = true}

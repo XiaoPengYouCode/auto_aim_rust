@@ -47,3 +47,6 @@ tokio-serial = "5.4.5"
 chrono = "0.4.41"
 notify = "8.0.0"
 crossbeam-queue = "0.3.12"
+
+# enum reflect
+strum = {version = "0.27.2", features = ["derive"]}

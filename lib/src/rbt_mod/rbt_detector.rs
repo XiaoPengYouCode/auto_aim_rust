@@ -9,21 +9,18 @@ use std::cmp::PartialEq;
 use std::collections::HashMap;
 use tracing::{error, info};
 
+use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 use crate::rbt_mod::rbt_armor::{ArmorId, ArmorLabel};
 use crate::rbt_mod::rbt_detector::rbt_yolo::{BBox, YOLO_LABEL_TABLE};
 use crate::rbt_mod::rbt_detector::rbt_yolo::{intersection, union};
-use crate::rbt_mod::rbt_enemy::EnemyId;
+use crate::rbt_mod::rbt_estimator::rbt_enemy_model::EnemyId;
 use crate::rbt_mod::rbt_solver::RbtSolver;
-use crate::{
-    rbt_infra::rbt_cfg,
-    rbt_mod::rbt_armor::detected_armor::DetectedArmor,
-};
-use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
+use crate::{rbt_infra::rbt_cfg, rbt_mod::rbt_armor::detected_armor::DetectedArmor};
 
-pub mod rbt_yolo;
 pub mod rbt_frame;
+pub mod rbt_yolo;
 
 pub struct ArmorDetector {
     img: DynamicImage,
@@ -94,8 +91,6 @@ impl ArmorDetector {
             if prob < 0.8 {
                 continue;
             }
-            dbg!(&row);
-            dbg!(&row.len());
             let xc = row[0];
             let yc = row[1];
             let w = row[2];
@@ -128,10 +123,10 @@ impl ArmorDetector {
         }
 
         // 收集结果
-        let mut armors = HashMap::new();
+        let mut armors = HashMap::with_capacity(6);
 
+        let mut id = 0usize;
         for (_, class_id, _, idx) in result {
-            dbg!(&class_id);
             let armor_label = &YOLO_LABEL_TABLE[class_id];
             if armor_label.color()
                 == &GENERIC_RBT_CFG
@@ -150,9 +145,10 @@ impl ArmorDetector {
                 RbtImgPoint2::new_screen_pixel(output[[idx, 42]], output[[idx, 43]]),
                 RbtImgPoint2::new_screen_pixel(output[[idx, 44]], output[[idx, 45]]),
                 RbtImgPoint2::new_screen_pixel(output[[idx, 46]], output[[idx, 47]]),
+                id,
             );
-
             armors.entry(armor_id).or_insert(Vec::new()).push(armor);
+            id += 1; // 用于辨识帧画面所有装甲板的唯一id
         }
         Ok(armors)
     }

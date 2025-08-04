@@ -19,13 +19,13 @@
 - 🦀 **全 Rust 实现**：零成本抽象，安全而强大。基于 `ort-rs` 实现跨平台端侧推理部署（支持全部onnxruntime-EP，包括`TensorRT`, `OpenVino`, `RKNN`, `CANN` ... ）
 - 🚦 **多线程任务调度**：基于 `tokio` 打造全异步推理流，可选 `rayon` 支持并行图像处理、控制策略与通讯任务
 - 🎯 **手搓 PnP 求解器**：高度特化 IPPE-PnP 模块，硬编码装甲板参数，省去平面化和各向同性归一化操作，解算速度更快，精度高（No OpenCV），使用双装甲板反向投影，获得更加鲁棒的机器人中心识别
-- ⚙️ **唐完了的状态估计算法**：内置装甲板选择与跟踪模块(Todo)
+- ⚙️ **状态估计算法**：基于 `ESKF` 的状态估计器，内置装甲板选择与跟踪模块(Todo)
 - 📡 **异步消息通信队列**：基于 crossbeam-beam + Notify 机制构建的高性能异步无锁环形队列，超低延迟
 - 🏗️ **基础设施完善**：结构化日志（tracing）与错误处理（thiserror）高度成熟，保障系统健壮高效。
 - 🛠️ **超炫酷debug**：基于 [Rerun](rerun.io) 打造一流的 debug 体验
 - 🏆 **面向比赛优化**：针对 RoboMaster 赛场需求深度定制，兼顾实时性与可靠性
 
-![rerun-log](imgs/rerun-log.png)
+![rerun-log](docs/rerun-log.png)
 
 ---
 
@@ -44,11 +44,12 @@
 
 ### 🛠️ 环境要求
 
-- Rust Stable
+- Rust Stable(未进行 MSRV 测试)
 
 ### 🚀 快速运行
 
 ```bash
+git clone https://github.com/XiaoPengYouCode/auto_aim_rust.git
 cargo build --release
 cargo run -p auto_aim_async --release
 ```
@@ -57,6 +58,4 @@ cargo run -p auto_aim_async --release
   <img src="assets/3se-logo.png" width="150" alt="3SE Logo"/>&nbsp;&nbsp;&nbsp;
   <img src="assets/robo-rust-logo.svg" width="130" alt="RoboRust Logo"/>
   <p align="center">❤️爱来自东南大学3SE战队❤️</p>
-</p>
-
 </p>

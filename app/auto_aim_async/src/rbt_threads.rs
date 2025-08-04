@@ -7,8 +7,8 @@ use tracing::{error, info, warn};
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
 use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
 use lib::rbt_mod::rbt_detector::BBox;
-use lib::rbt_mod::rbt_detector::rbt_yolo::{letterbox, nms};
 use lib::rbt_mod::rbt_detector::rbt_frame::{RbtFrame, RbtFrameStage};
+use lib::rbt_mod::rbt_detector::rbt_yolo::{letterbox, nms};
 
 use lib::rbt_infra::rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING};
 use lib::rbt_infra::rbt_queue_async::RbtQueueAsync;

@@ -28,7 +28,11 @@ impl RbtImgPoint2 {
     }
 
     pub fn new_screen_pixel(x_f32: f32, y_f32: f32) -> Self {
-        Self::new(x_f32 as f64, y_f32 as f64, RbtImgPoint2CoordSys::ScreenPixel)
+        Self::new(
+            x_f32 as f64,
+            y_f32 as f64,
+            RbtImgPoint2CoordSys::ScreenPixel,
+        )
     }
 
     pub fn from_point2(point: na::Point2<f64>, coord_sys: RbtImgPoint2CoordSys) -> Self {
