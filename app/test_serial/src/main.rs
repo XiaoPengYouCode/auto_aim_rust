@@ -1,5 +1,5 @@
 /// 用于测试电控通讯
-use lib::rbt_infra::rbt_comm;
+use lib::rbt_mod::rbt_comm;
 use tracing::info;
 
 #[tokio::main]

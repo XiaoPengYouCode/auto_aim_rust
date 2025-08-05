@@ -21,8 +21,8 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
     let cfg = RbtCfg::from_toml()?;
     // todo!(这里直接使用了 lazy_static 中读取的配置，还没有替换成最新的 rbt_cfg)
     let _logger_guard = logger_init().await?;
-    // let rec = rr::RecordingStreamBuilder::new("AutoAim").save("rerun-log/test.rrd")?;
-    let rec = rr::RecordingStreamBuilder::new("AutoAim").spawn()?;
+    let rec = rr::RecordingStreamBuilder::new("AutoAim").save("rerun-log/test.rrd")?;
+    // let rec = rr::RecordingStreamBuilder::new("AutoAim").spawn()?;
     let enemy_fraction = cfg.game_cfg.enemy_fraction().unwrap();
 
     Ok(AutoAimHandle {
@@ -32,6 +32,8 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
     })
 }
 
+/// 虽为 tokio 异步运行时
+/// 但是该函数内所有代码都是同步执行
 #[tokio::main]
 async fn main() -> RbtResult<()> {
     // 必要初始化步骤

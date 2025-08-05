@@ -1,5 +1,5 @@
-// pub mod generic_def;
-pub mod rbt_armor;
-pub mod rbt_detector;
-pub mod rbt_estimator;
-pub mod rbt_solver;
+pub mod rbt_armor; // 装甲板
+pub mod rbt_comm;
+pub mod rbt_detector; // 目标检测器
+pub mod rbt_estimator; // 估计器
+pub mod rbt_solver; // 求解器 // 通信模块

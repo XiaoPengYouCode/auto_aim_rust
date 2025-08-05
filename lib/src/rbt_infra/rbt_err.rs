@@ -88,4 +88,6 @@ pub enum CommError {
     NoPort,
     #[error("SystemError")]
     SystemError,
+    #[error("数据帧长度错误")]
+    FrameLengthError,
 }

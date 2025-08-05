@@ -214,14 +214,14 @@ impl RbtHandlerPoll {
     /// 针对所有成功 Solved 的敌方单位进行更新
     pub async fn update(&mut self, cfg: &EstimatorCfg, solved_enemies: RbtSolvedResults) {
         // 针对每个已解的敌方单位，更新估计器
-        // for (solved_enemy_id, solved_enemy) in &*solved_enemies {
-        //     info!("updated enemy id:{}", solved_enemy_id);
-        //     self.estimators.get_mut(solved_enemy_id).unwrap().update(
-        //         cfg,
-        //         solved_enemy,
-        //         solved_enemy_id,
-        //     );
-        // }
+        for (solved_enemy_id, solved_enemy) in solved_enemies.deref() {
+            info!("updated enemy id:{}", solved_enemy_id);
+            // self.estimators.get_mut(solved_enemy_id).unwrap().update(
+            //     cfg,
+            //     solved_enemy,
+            //     solved_enemy_id,
+            // );
+        }
         info!("todo: 针对解算的敌方单位进行更新")
     }
 }
