@@ -90,4 +90,8 @@ pub enum CommError {
     SystemError,
     #[error("数据帧长度错误")]
     FrameLengthError,
+    #[error("起始帧错误")]
+    InvalidStartOfFrame,
+    #[error("结束帧错误")]
+    InvalidEndOfFrame,
 }

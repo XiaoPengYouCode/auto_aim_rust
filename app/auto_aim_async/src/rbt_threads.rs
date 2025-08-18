@@ -11,13 +11,13 @@ use lib::rbt_mod::rbt_detector::rbt_frame::{RbtFrame, RbtFrameStage};
 use lib::rbt_mod::rbt_detector::rbt_yolo::{letterbox, nms};
 
 use lib::rbt_infra::rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING};
-use lib::rbt_infra::rbt_queue_async::RbtQueueAsync;
+use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
 
 pub mod rbt_cfg_thread;
 
 /// 图像预处理阶段：读取图像并通过通道发送到下一阶段。
 /// 此函数负责读取图像、调整图像大小、转换为归一化格式，并为推理阶段准备数据。
-pub fn pre_process(queue: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()> {
+pub fn pre_process(queue: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         for frame_id in 1..=1000 {
             let mut rbt_frame = RbtFrame::new();
@@ -66,9 +66,9 @@ pub fn pre_process(queue: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()> {
 
 /// 推理阶段：接收预处理后的数据，执行模型推理，并将结果发送到后续处理阶段
 pub fn infer(
-    pre_infer_queue: Arc<RbtQueueAsync<RbtFrame>>, // 接收预处理阶段的输出
-    mut session: ort::session::Session,            // ONNX Runtime 推理会话
-    infer_post_queue: Arc<RbtQueueAsync<RbtFrame>>, // 发送推理结果到后续处理阶段
+    pre_infer_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>, // 接收预处理阶段的输出
+    mut session: ort::session::Session,                // ONNX Runtime 推理会话
+    infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>, // 发送推理结果到后续处理阶段
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
@@ -122,7 +122,7 @@ pub fn infer(
 }
 
 /// 后处理阶段：接收推理结果，执行目标检测框处理，并提取装甲板信息
-pub async fn post_process(frame: Arc<RbtQueueAsync<RbtFrame>>) -> JoinHandle<()> {
+pub async fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             if IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) == false {

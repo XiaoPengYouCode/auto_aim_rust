@@ -1,6 +1,7 @@
 /// 该文件定义了上下位机通讯的数据结构
 /// 卢钟瑾 2025.08.06
 use crate::rbt_infra::rbt_err::{CommError, RbtResult};
+use tracing::warn;
 
 /// 帧结构 trait
 /// 类型大小确定
@@ -13,10 +14,18 @@ pub trait CommData: Sized {
 
     fn deserialize(buffer: &[u8]) -> RbtResult<Self>;
 
-    fn validate_frame(buffer: &[u8]) -> bool {
-        buffer.len() == Self::FRAME_SIZE
-            && buffer[0] == Self::SOF
-            && buffer[buffer.len() - 1] == Self::EOF
+    /// 检查帧长度，帧头和帧尾
+    fn validate_frame(buffer: &[u8]) -> RbtResult<()> {
+        if buffer.len() != Self::FRAME_SIZE {
+            return Err(CommError::FrameLengthError.into());
+        }
+        if buffer[0] != Self::SOF {
+            return Err(CommError::InvalidStartOfFrame.into());
+        }
+        if buffer[buffer.len() - 1] != Self::EOF {
+            return Err(CommError::InvalidEndOfFrame.into());
+        }
+        Ok(())
     }
 }
 
@@ -71,7 +80,11 @@ impl AimingState {
             0x11 => AimingState::CommunicateNoCamera,
             0x22 => AimingState::AimingNoTarget,
             0x33 => AimingState::AimingWithTarget,
-            _ => AimingState::NoAimingNoTarget, // 默认值
+            _ => {
+                // 默认值
+                warn!("Invalid aim mode state {}", value);
+                AimingState::NoAimingNoTarget
+            }
         }
     }
 }
@@ -81,7 +94,11 @@ impl ShotBuffMode {
         match value {
             0x00 => ShotBuffMode::ShotBuffOff,
             0x01 => ShotBuffMode::ShotBuffOn,
-            _ => ShotBuffMode::ShotBuffOff, // 默认值
+            _ => {
+                // 默认值
+                warn!("Invalid shot buff mode value {}", value);
+                ShotBuffMode::ShotBuffOff
+            }
         }
     }
 }
@@ -93,7 +110,11 @@ impl ShotMode {
             0x01 => ShotMode::AimOnly,
             0x02 => ShotMode::AutoFire,
             0x03 => ShotMode::ShotOnce,
-            _ => ShotMode::DoNothing, // 默认值
+            _ => {
+                // 默认值
+                warn!("Invalid shot mode value: {}", value);
+                ShotMode::DoNothing
+            }
         }
     }
 }
@@ -121,10 +142,9 @@ impl CommData for CtrlData {
     const SOF: u8 = 0x33;
     const EOF: u8 = 0xEE;
 
+    /// 序列化
     fn serialize(&self, buffer: &mut [u8]) -> RbtResult<()> {
-        if !Self::validate_frame(buffer) {
-            return Err(CommError::FrameLengthError.into());
-        }
+        Self::validate_frame(buffer)?;
 
         buffer[0] = Self::SOF;
         let gimbal_yaw_bytes = self.gimbal_yaw.to_le_bytes();
@@ -139,10 +159,9 @@ impl CommData for CtrlData {
         Ok(())
     }
 
+    /// 反序列化
     fn deserialize(buffer: &[u8]) -> RbtResult<Self> {
-        if !Self::validate_frame(buffer) {
-            return Err(CommError::FrameLengthError.into());
-        }
+        Self::validate_frame(buffer)?;
 
         let mut bytes = [0u8; 13];
         bytes.copy_from_slice(&buffer[0..13]);
@@ -203,7 +222,11 @@ impl TaskMode {
             0x01 => TaskMode::AutoShot,
             0x02 => TaskMode::HitBigBuff,
             0x03 => TaskMode::HitSmallBuff,
-            _ => TaskMode::AutoShot, // 默认值
+            _ => {
+                // 默认值
+                warn!("Invalid self fraction value: {}", value);
+                TaskMode::AutoShot
+            }
         }
     }
 }
@@ -213,7 +236,11 @@ impl SelfFraction {
         match value {
             0xAA => SelfFraction::Red,
             0xBB => SelfFraction::Blue,
-            _ => SelfFraction::Red, // 默认值
+            _ => {
+                // 默认值
+                warn!("Invalid self fraction value: {}", value);
+                SelfFraction::Red
+            }
         }
     }
 }
@@ -235,17 +262,17 @@ impl CommData for SensData {
     const SOF: u8 = 0x33;
     const EOF: u8 = 0xEE;
 
+    /// 序列化操作
     fn serialize(&self, buffer: &mut [u8]) -> RbtResult<()> {
-        if !Self::validate_frame(buffer) {
-            return Err(CommError::FrameLengthError.into());
-        }
+        Self::validate_frame(buffer)?;
+
         buffer[0] = Self::SOF;
         buffer[1] = self.task_mode.into();
         buffer[2] = self.self_fraction.into();
         let bullet_speed_bytes = self.bullet_speed.to_le_bytes();
-        buffer[2..6].copy_from_slice(&bullet_speed_bytes);
+        buffer[3..7].copy_from_slice(&bullet_speed_bytes);
         let gimbal_roll_bytes = self.gimbal_roll.to_le_bytes();
-        buffer[6..10].copy_from_slice(&gimbal_roll_bytes);
+        buffer[7..11].copy_from_slice(&gimbal_roll_bytes);
         let gimbal_yaw_bytes = self.gimbal_yaw.to_le_bytes();
         buffer[11..15].copy_from_slice(&gimbal_yaw_bytes);
         let gimbal_pitch_bytes = self.gimbal_pitch.to_le_bytes();
@@ -257,10 +284,9 @@ impl CommData for SensData {
         Ok(())
     }
 
+    /// 反序列化操作
     fn deserialize(buffer: &[u8]) -> RbtResult<Self> {
-        if !Self::validate_frame(buffer) {
-            return Err(CommError::FrameLengthError.into());
-        }
+        Self::validate_frame(buffer)?;
 
         let mut bytes = [0u8; 24];
         bytes.copy_from_slice(&buffer[0..24]);
@@ -272,6 +298,7 @@ impl CommData for SensData {
         let gimbal_yaw = f32::from_le_bytes([bytes[11], bytes[12], bytes[13], bytes[14]]);
         let gimbal_pitch = f32::from_le_bytes([bytes[15], bytes[16], bytes[17], bytes[18]]);
         let yaw_speed = f32::from_le_bytes([bytes[19], bytes[20], bytes[21], bytes[22]]);
+
         Ok(Self {
             task_mode,
             self_fraction,

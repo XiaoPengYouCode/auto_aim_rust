@@ -1,12 +1,11 @@
 pub mod rbt_cfg; // cfg 实现
+pub mod rbt_comm_device;
 pub mod rbt_log; // log 实现
 pub mod rbt_macro; // 宏实现
-pub mod rbt_queue_async; // 高性能异步队列
-pub mod rbt_serial; // 串口通信
+pub mod rbt_queue_async; // 高性能异步队列 // 通信设备接口
 
-// 基础库（math, geometry）
-pub mod rbt_err;
-pub mod rbt_global;
+pub mod rbt_err; // 错误处理
+pub mod rbt_global; // 全局变量
 
 // rerun virturalization tools
-pub mod rbt_rerun;
+pub mod rbt_rerun; // 可视化工具
