@@ -7,7 +7,8 @@ use lib::rbt_infra::rbt_cfg::RbtCfg;
 use lib::rbt_infra::rbt_err::RbtResult;
 use lib::rbt_infra::rbt_log::logger_init;
 use lib::rbt_mod::rbt_detector::pipeline;
-use lib::rbt_mod::rbt_estimator::RbtHandlerPoll;
+use lib::rbt_mod::rbt_estimator::RbtEstimator;
+use lib::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
 use lib::rbt_mod::rbt_solver::enemys_solver;
 
 struct AutoAimHandle {
@@ -36,18 +37,28 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
 /// 但是该函数内所有代码都是同步执行
 #[tokio::main]
 async fn main() -> RbtResult<()> {
-    // 必要初始化步骤
+    // 0. 初始化
     let mut auto_aim_handle = auto_aim_init().await?;
 
-    // 执行 detector
-    let detector_result = pipeline(&auto_aim_handle.cfg.detector_cfg)?;
-    let cam_k = auto_aim_handle.cfg.cam_cfg.cam_k();
-    let enemys = enemys_solver(detector_result, &cam_k, &auto_aim_handle.rec)?;
+    loop {
+        // 1. 执行 detector，使用神经网络模型，寻找所有的装甲板
+        let detector_result = pipeline(&auto_aim_handle.cfg.detector_cfg)?;
 
-    let mut estimator_poll = RbtHandlerPoll::new();
-    estimator_poll
-        .update(&auto_aim_handle.cfg.estimator_cfg, enemys)
-        .await;
+        // 2. 执行 solver
+        // 获取相机内参
+        let cam_k = auto_aim_handle.cfg.cam_cfg.cam_k();
+        // 解算检测到的所有装甲板，得到所有地方单位的解算结果
+        let enemys = enemys_solver(detector_result, &cam_k, &auto_aim_handle.rec)?;
 
-    Ok(())
+        // 3. 执行 estimator
+        // 创建对 3 号步兵的估计器
+        let mut estimator = RbtEstimator::new(EnemyId::Infantry3);
+        // 从全部解算结果中获取 3 号步兵的解算结果
+        let target_enemy_solved_result = enemys.get(&estimator.enemy_id).unwrap();
+        // 基于解算结果，更新估计器
+        estimator.update(
+            &auto_aim_handle.cfg.estimator_cfg,
+            target_enemy_solved_result,
+        );
+    }
 }

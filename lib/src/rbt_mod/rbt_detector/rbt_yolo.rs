@@ -46,10 +46,10 @@ pub fn nms(mut boxes: Vec<(BBox, usize, f32, usize)>) -> Vec<(BBox, usize, f32, 
 pub struct YoloLabel(ArmorColor, ArmorId);
 
 impl YoloLabel {
-    pub(crate) fn id(&self) -> &ArmorId {
+    pub fn id(&self) -> &ArmorId {
         &self.1
     }
-    pub(crate) fn color(&self) -> &ArmorColor {
+    pub fn color(&self) -> &ArmorColor {
         &self.0
     }
 }

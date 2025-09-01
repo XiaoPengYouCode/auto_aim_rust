@@ -13,9 +13,9 @@ use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 use crate::rbt_mod::rbt_armor::{ArmorId, ArmorLabel};
-use crate::rbt_mod::rbt_detector::rbt_yolo::{BBox, YOLO_LABEL_TABLE};
+pub use crate::rbt_mod::rbt_detector::rbt_yolo::{BBox, YOLO_LABEL_TABLE};
 use crate::rbt_mod::rbt_detector::rbt_yolo::{intersection, union};
-use crate::rbt_mod::rbt_estimator::rbt_enemy_model::EnemyId;
+use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
 use crate::rbt_mod::rbt_solver::RbtSolver;
 use crate::{rbt_infra::rbt_cfg, rbt_mod::rbt_armor::detected_armor::DetectedArmor};
 
@@ -72,7 +72,7 @@ impl ArmorDetector {
         &self,
         outputs: &SessionOutputs,
     ) -> ort::Result<HashMap<EnemyId, Vec<DetectedArmor>>> {
-        // // f32
+        // f32
         let output = outputs["output0"]
             .try_extract_array::<f32>()?
             .t()
@@ -125,7 +125,7 @@ impl ArmorDetector {
         // 收集结果
         let mut armors = HashMap::with_capacity(6);
 
-        let mut id = 0usize;
+        let mut idx_id = 0usize;
         for (_, class_id, _, idx) in result {
             let armor_label = &YOLO_LABEL_TABLE[class_id];
             if armor_label.color()
@@ -139,16 +139,24 @@ impl ArmorDetector {
                 continue;
             }
             let armor_id = armor_label.id().clone();
-            let armor = DetectedArmor::new(
-                RbtImgPoint2::new_screen_pixel(output[[idx, 0]], output[[idx, 1]]),
-                RbtImgPoint2::new_screen_pixel(output[[idx, 40]], output[[idx, 41]]),
-                RbtImgPoint2::new_screen_pixel(output[[idx, 42]], output[[idx, 43]]),
-                RbtImgPoint2::new_screen_pixel(output[[idx, 44]], output[[idx, 45]]),
-                RbtImgPoint2::new_screen_pixel(output[[idx, 46]], output[[idx, 47]]),
-                id,
-            );
-            armors.entry(armor_id).or_insert(Vec::new()).push(armor);
-            id += 1; // 用于辨识帧画面所有装甲板的唯一id
+            let corner_coords = [
+                output[[idx, 0]],
+                output[[idx, 1]],
+                output[[idx, 40]],
+                output[[idx, 41]],
+                output[[idx, 41]],
+                output[[idx, 41]],
+                output[[idx, 41]],
+                output[[idx, 41]],
+                output[[idx, 41]],
+                output[[idx, 41]],
+            ];
+            let detected_armor = DetectedArmor::from_corner_coords(&corner_coords, idx_id);
+            armors
+                .entry(armor_id)
+                .or_insert(Vec::new())
+                .push(detected_armor);
+            idx_id += 1; // 用于辨识帧画面所有装甲板的唯一id
         }
         Ok(armors)
     }

@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::rbt_bail_error;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
-use crate::rbt_mod::rbt_estimator::rbt_enemy_model::EnemyFaction;
+use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyFaction;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct GameCfg {

@@ -1,5 +1,9 @@
+mod serial_test;
+mod udp_test;
+mod usb_test;
+
 /// 用于测试电控通讯
-use lib::rbt_mod::rbt_comm;
+use lib::rbt_mod::rbt_comm::rbt_comm_frame;
 use tracing::info;
 
 #[tokio::main]
@@ -10,7 +14,7 @@ async fn main() {
 
     // 接收线程
     let sens_handle = tokio::spawn(async move {
-        // 10ms 定时器
+        // 2ms 定时器
         let mut ticker = tokio::time::interval(tokio::time::Duration::from_millis(10));
         loop {
             ticker.tick().await;

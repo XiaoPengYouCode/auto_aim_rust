@@ -6,10 +6,10 @@ use std::ops::{Deref, DerefMut};
 /// 该结构体一部分从 PNP 算法中计算得到
 /// 一部分从 enemy 反解得到
 #[derive(Debug, Clone)]
-pub(crate) struct SolvedArmor {
+pub struct SolvedArmor {
     detected_armor: DetectedArmor,
     pose: RbtPose3, // 从 pnp 中得到
-    enemy_yaw: f64,
+    pub enemy_yaw: f64,
     base_yaw: f64,
     radius: f64,
 }

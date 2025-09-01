@@ -1,5 +1,7 @@
 use crate::rbt_mod::rbt_detector::rbt_yolo::YoloLabel;
-use crate::rbt_mod::rbt_estimator::rbt_enemy_model::{EnemyArmorType, EnemyFaction, EnemyId};
+use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::{
+    EnemyArmorType, EnemyFaction, EnemyId,
+};
 use std::fmt::Display;
 
 /// detected 中会用到的独占部分

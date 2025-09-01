@@ -43,17 +43,39 @@
 ### 🛠️ 环境要求
 
 - Rust Stable (未进行 MSRV 测试)
+- Python (3.8+)
+- uv (推荐使用 uv 进行 python 项目管理)
 
-### 🚀 快速运行
+### 🚀 如何运行
 
-```bash
-git clone https://github.com/XiaoPengYouCode/auto_aim_rust.git
-cargo build --release # 编译库文件
-cargo run -p auto_aim_async --release
-```
+1.  **克隆并进入仓库**:
+    ```bash
+    git clone https://github.com/XiaoPengYouCode/auto_aim_rust.git
+    cd auto_aim_rust
+    ```
+
+2.  **使用 uv 创建虚拟环境，安装依赖**:
+    ```bash
+    uv sync
+    ```
+
+3.  **设置环境变量** (每次打开终端都需要执行，建议自行持久化):
+    ```bash
+    # This sets the library path to find ONNX Runtime and OpenVINO native libraries.
+    # Note: If your Python version is not 3.11, adjust the path accordingly.
+    export LD_LIBRARY_PATH="$PWD/.venv/lib64/python3.11/site-packages/onnxruntime/capi:$PWD/.venv/lib64/python3.11/site-packages/openvino/libs:$LD_LIBRARY_PATH"
+    ```
+
+4.  **分布构建并运行**:
+    ```bash
+    cargo build --release
+    cargo run -p auto_aim_async --release
+    ```
 
 <p align="center">
   <img src="assets/3se-logo.png" width="150" alt="3SE Logo"/>&nbsp;&nbsp;&nbsp;
   <img src="assets/robo-rust-logo.svg" width="130" alt="RoboRust Logo"/>
-  <p align="center">❤️爱来自东南大学3SE战队❤️</p>
+  <p align="center">
+    ❤️爱来自东南大学3SE战队❤️
+  </p>
 </p>

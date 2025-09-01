@@ -22,6 +22,20 @@ impl DetectedArmor {
         }
     }
 
+    /// 根据五点坐标来创建
+    pub fn from_corner_coords(corner: &[f32; 10], id: usize) -> Self {
+        DetectedArmor {
+            key_points: [
+                RbtImgPoint2::new_screen_pixel(corner[0], corner[1]),
+                RbtImgPoint2::new_screen_pixel(corner[2], corner[3]),
+                RbtImgPoint2::new_screen_pixel(corner[4], corner[5]),
+                RbtImgPoint2::new_screen_pixel(corner[6], corner[7]),
+                RbtImgPoint2::new_screen_pixel(corner[8], corner[9]),
+            ],
+            id,
+        }
+    }
+
     #[inline(always)]
     pub fn center(&self) -> RbtImgPoint2 {
         self.key_points[0]
@@ -47,7 +61,7 @@ impl DetectedArmor {
         self.key_points[4]
     }
 
-    pub fn cornet_points(&self) -> [RbtImgPoint2; 4] {
+    pub fn corner_points(&self) -> [RbtImgPoint2; 4] {
         [self.lt(), self.lb(), self.rb(), self.rt()]
     }
 }

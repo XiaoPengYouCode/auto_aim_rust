@@ -1,19 +1,29 @@
 use ort::inputs;
 use ort::value::TensorRef;
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::task::JoinHandle;
 use tracing::{error, info, warn};
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
-use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
-use lib::rbt_mod::rbt_detector::BBox;
-use lib::rbt_mod::rbt_detector::rbt_frame::{RbtFrame, RbtFrameStage};
-use lib::rbt_mod::rbt_detector::rbt_yolo::{letterbox, nms};
-
-use lib::rbt_infra::rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING};
-use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
-
-pub mod rbt_cfg_thread;
+// use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
+use lib::rbt_mod::rbt_solver::RbtSolvedResults;
+use lib::{
+    rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2,
+    rbt_infra::{
+        rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING},
+        rbt_queue_async::RbtSPSCQueueAsync,
+    },
+    rbt_mod::{
+        rbt_armor::detected_armor::DetectedArmor,
+        rbt_detector::{
+            BBox,
+            rbt_frame::{RbtFrame, RbtFrameStage},
+            rbt_yolo::{YOLO_LABEL_TABLE, letterbox, nms},
+        },
+        rbt_estimator::RbtHandlerPoll,
+    },
+};
 
 /// 图像预处理阶段：读取图像并通过通道发送到下一阶段。
 /// 此函数负责读取图像、调整图像大小、转换为归一化格式，并为推理阶段准备数据。
@@ -122,7 +132,7 @@ pub fn infer(
 }
 
 /// 后处理阶段：接收推理结果，执行目标检测框处理，并提取装甲板信息
-pub async fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
+pub fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             if IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) == false {
@@ -180,18 +190,44 @@ pub async fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle
                     // 非极大值抑制：去除重叠的检测框，保留最优框
                     let result = nms(boxes);
 
+                    let mut id = 0usize;
                     // 收集装甲板信息
-                    let mut armors = Vec::<ArmorKeyPoints>::with_capacity(result.len());
-                    for (_, _, _, idx) in result {
-                        let armor = ArmorKeyPoints::new(
-                            ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]), // 中心点坐标
-                            ImgCoord::from_f32(output[[idx, 40]], output[[idx, 41]]), // 特征点 1
-                            ImgCoord::from_f32(output[[idx, 42]], output[[idx, 43]]), // 特征点 2
-                            ImgCoord::from_f32(output[[idx, 44]], output[[idx, 45]]), // 特征点 3
-                            ImgCoord::from_f32(output[[idx, 46]], output[[idx, 47]]), // 特征点 4
+                    let mut armors = Vec::<DetectedArmor>::with_capacity(result.len());
+                    for (_, class_id, _, idx) in result {
+                        //     let armor = ArmorKeyPoints::new(
+                        //         ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]), // 中心点坐标
+                        //         ImgCoord::from_f32(output[[idx, 40]], output[[idx, 41]]), // 特征点 1
+                        //         ImgCoord::from_f32(output[[idx, 42]], output[[idx, 43]]), // 特征点 2
+                        //         ImgCoord::from_f32(output[[idx, 44]], output[[idx, 45]]), // 特征点 3
+                        //         ImgCoord::from_f32(output[[idx, 46]], output[[idx, 47]]), // 特征点 4
+                        //     );
+                        //     armors.push(armor); // 添加到装甲板列表
+                        let armor_label = &YOLO_LABEL_TABLE[class_id];
+                        if armor_label.color()
+                            == &GENERIC_RBT_CFG
+                                .read()
+                                .unwrap()
+                                .game_cfg
+                                .self_fraction()
+                                .unwrap()
+                        {
+                            continue;
+                        }
+                        // let armor_id = armor_label.id().clone();
+
+                        let armor = DetectedArmor::new(
+                            RbtImgPoint2::new_screen_pixel(output[[idx, 0]], output[[idx, 1]]),
+                            RbtImgPoint2::new_screen_pixel(output[[idx, 40]], output[[idx, 41]]),
+                            RbtImgPoint2::new_screen_pixel(output[[idx, 42]], output[[idx, 43]]),
+                            RbtImgPoint2::new_screen_pixel(output[[idx, 44]], output[[idx, 45]]),
+                            RbtImgPoint2::new_screen_pixel(output[[idx, 46]], output[[idx, 47]]),
+                            id,
                         );
-                        armors.push(armor); // 添加到装甲板列表
+
+                        id += 1;
+                        armors.push(armor);
                     }
+
                     (frame, armors) // 返回装甲板信息
                 })
                 .await;
@@ -215,6 +251,21 @@ pub async fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle
                 warn!("post_process: No frame available for processing");
                 continue; // 如果没有数据，继续等待
             }
+        }
+    })
+}
+
+/// 500Hz 频率通讯
+pub async fn estimate_process() -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(2));
+        loop {
+            ticker.tick().await;
+            let enemys = RbtSolvedResults::default();
+            let mut estimator_poll = RbtHandlerPoll::new();
+            estimator_poll
+                .update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys)
+                .await;
         }
     })
 }

@@ -4,7 +4,7 @@ members = [
     "app/auto_aim_async",
     "app/ippe_benchmark",
     "app/single_frame_dev",
-    "app/test_serial"
+    "app/comm_test"
 ]
 default-members = ["lib"]
 resolver = "3"
