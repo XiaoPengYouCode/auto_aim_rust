@@ -18,10 +18,12 @@ use crate::rbt_mod::rbt_armor::tracked_armor::TrackedArmor;
 use crate::rbt_mod::rbt_solver::{RbtSolvedResult, RbtSolvedResults};
 
 use rbt_enemy_dynamic_model::{Enemy, EnemyId, EnemyModel, armor_switch_decision, handle_switch};
+use rbt_enemy_select::{EnemySelectHandler, TRACKED_ENEMY_IDS};
 use rbt_estimator_state::EstimatorStateMachine;
 
 /// 动力学模型
 pub mod rbt_enemy_dynamic_model;
+mod rbt_enemy_select;
 
 pub mod rbt_estimator_state {
     use crate::rbt_infra::rbt_cfg::EstimatorCfg;
@@ -154,7 +156,7 @@ impl RbtEstimator {
         self.last_tracked_enemy = self.tracked_enemy.clone();
         self.last_tracked_armor = self.tracked_armor.clone();
 
-        // 2. 仅在检测到有效敌人时更新当前状态
+        // 2. 仅在检测到有效敌人时更新当前观测。无观测时保留状态，让 Lost 可以纯预测。
         if let Some(solved) = solved_enemy {
             // 如果tracked_enemy不存在，创建新的；如果存在，更新其状态
             if let Some(enemy) = &mut self.tracked_enemy {
@@ -170,13 +172,18 @@ impl RbtEstimator {
                 self.tracked_enemy = Some(Enemy::new(&self.enemy_id, Some(solved.clone())));
             }
             self.tracked_armor = Some(TrackedArmor::new(solved.armors.clone()[0].clone(), 0.0));
-        } else {
-            self.tracked_enemy = None;
-            self.tracked_armor = None;
         }
 
         // 3. 更新状态机
         self.state.update(solved_enemy, cfg);
+
+        if matches!(
+            self.state,
+            EstimatorStateMachine::Init | EstimatorStateMachine::Sleep
+        ) {
+            self.tracked_enemy = None;
+            self.tracked_armor = None;
+        }
 
         // 4. 设置全局变量
         self.update_global_vars(solved_enemy);
@@ -221,19 +228,15 @@ impl RbtEstimator {
     ) {
         use EstimatorStateMachine::*;
 
-        // 仅在有有效解时解包，否则直接返回
-        let solved_enemy = match solved_enemy {
-            Some(solved) => solved,
-            None => return, // 无有效解时不处理
-        };
-
         info!("State: {}", self.state);
 
         match &self.state {
             Init | Sleep => {} // 待机状态不处理
             WakeUp => {
                 // 获得 enemy 的可变引用并初始化状态
-                if let Some(enemy) = self.tracked_enemy.as_mut() {
+                if let (Some(enemy), Some(solved_enemy)) =
+                    (self.tracked_enemy.as_mut(), solved_enemy)
+                {
                     enemy.nominal_state.theta = solved_enemy.coord.theta_d;
                     enemy.nominal_state.distance = solved_enemy.coord.rho;
                     enemy.enemy_yaw = solved_enemy.coord.theta_d;
@@ -241,7 +244,9 @@ impl RbtEstimator {
                 }
             }
             Track { jump: state_jump } => {
-                if let Some(enemy) = self.tracked_enemy.as_mut() {
+                if let (Some(enemy), Some(_solved_enemy)) =
+                    (self.tracked_enemy.as_mut(), solved_enemy)
+                {
                     // 先复制armor_layout以避免借用冲突
                     let armor_layout = enemy.armor_layout.clone();
 
@@ -293,7 +298,9 @@ impl RbtEstimator {
                 }
             }
             Recovery => {
-                if let Some(_enemy) = self.tracked_enemy.as_mut() {
+                if let (Some(_enemy), Some(_solved_enemy)) =
+                    (self.tracked_enemy.as_mut(), solved_enemy)
+                {
                     let enemy = self.tracked_enemy.as_mut().unwrap();
                     let input = enemy.get_eskf_input();
                     let measurement = enemy.get_eskf_measurement();
@@ -317,37 +324,156 @@ impl RbtEstimator {
 #[derive(Debug, Clone)]
 pub struct RbtHandlerPoll {
     estimators: HashMap<EnemyId, RbtEstimator>,
+    enemy_selector: EnemySelectHandler,
 }
 
 impl RbtHandlerPoll {
     pub fn new() -> Self {
         let mut estimators = HashMap::with_capacity(6);
-        for enemy_id in [
-            EnemyId::Hero1,
-            EnemyId::Engineer2,
-            EnemyId::Infantry3,
-            EnemyId::Infantry4,
-            EnemyId::Sentry7,
-            EnemyId::Outpost8,
-        ] {
+        for enemy_id in TRACKED_ENEMY_IDS {
             estimators.insert(enemy_id, RbtEstimator::new(enemy_id));
         }
 
-        Self { estimators }
+        Self {
+            estimators,
+            enemy_selector: EnemySelectHandler::default(),
+        }
     }
 
     pub fn update(&mut self, cfg: &EstimatorCfg, solved_enemies: RbtSolvedResults) {
-        for (enemy_id, solved_enemy) in solved_enemies.iter() {
+        let selected_enemy_id = self.enemy_selector.select(cfg, &solved_enemies);
+        let no_solution = None;
+
+        for enemy_id in TRACKED_ENEMY_IDS {
+            let solved_enemy = if selected_enemy_id == Some(enemy_id) {
+                solved_enemies.get(&enemy_id).unwrap_or(&no_solution)
+            } else {
+                &no_solution
+            };
+
             self.estimators
-                .entry(*enemy_id)
-                .or_insert_with(|| RbtEstimator::new(*enemy_id))
+                .entry(enemy_id)
+                .or_insert_with(|| RbtEstimator::new(enemy_id))
                 .update(cfg, solved_enemy);
         }
+    }
+
+    pub fn selected_enemy_id(&self) -> Option<EnemyId> {
+        self.enemy_selector.selected_enemy_id()
     }
 }
 
 impl Default for RbtHandlerPoll {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rbt_base::rbt_geometry::rbt_cylindrical2::RbtCylindricalPoint2;
+    use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
+    use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
+    use crate::rbt_mod::rbt_armor::solved_armor::SolvedArmor;
+    use na::Isometry3;
+
+    fn estimator_cfg(enemy_lost_wait_duration_ms: u64) -> EstimatorCfg {
+        toml::from_str(&format!(
+            "\
+armor_lost_wait_duration_ms = 100
+enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
+"
+        ))
+        .unwrap()
+    }
+
+    fn solved_enemy(center_x: f32, center_y: f32) -> RbtSolvedResult {
+        let detected_armor = DetectedArmor::new(
+            RbtImgPoint2::new_screen_pixel(center_x, center_y),
+            RbtImgPoint2::new_screen_pixel(center_x - 10.0, center_y - 5.0),
+            RbtImgPoint2::new_screen_pixel(center_x - 10.0, center_y + 5.0),
+            RbtImgPoint2::new_screen_pixel(center_x + 10.0, center_y + 5.0),
+            RbtImgPoint2::new_screen_pixel(center_x + 10.0, center_y - 5.0),
+            0,
+        );
+
+        RbtSolvedResult {
+            coord: RbtCylindricalPoint2::new(1_000.0, 0.0),
+            armors: vec![SolvedArmor::new(
+                detected_armor,
+                Isometry3::identity(),
+                0.0,
+                0.0,
+                200.0,
+            )],
+        }
+    }
+
+    fn frame(targets: &[(EnemyId, (f32, f32))]) -> RbtSolvedResults {
+        let mut solved_enemies = RbtSolvedResults::default();
+        for (enemy_id, (x, y)) in targets {
+            solved_enemies.insert(*enemy_id, Some(solved_enemy(*x, *y)));
+        }
+        solved_enemies
+    }
+
+    #[test]
+    fn handler_poll_feeds_only_the_selected_estimator() {
+        let cfg = estimator_cfg(1_000);
+        let mut handler_poll = RbtHandlerPoll::new();
+
+        handler_poll.update(
+            &cfg,
+            frame(&[
+                (EnemyId::Hero1, (320.0, 192.0)),
+                (EnemyId::Infantry3, (321.0, 192.0)),
+            ]),
+        );
+
+        assert_eq!(handler_poll.selected_enemy_id(), Some(EnemyId::Hero1));
+        assert!(
+            handler_poll.estimators[&EnemyId::Hero1]
+                .tracked_enemy
+                .is_some()
+        );
+        assert!(
+            handler_poll.estimators[&EnemyId::Infantry3]
+                .tracked_enemy
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn handler_poll_does_not_switch_while_selected_enemy_is_visible() {
+        let cfg = estimator_cfg(1_000);
+        let mut handler_poll = RbtHandlerPoll::new();
+
+        handler_poll.update(
+            &cfg,
+            frame(&[
+                (EnemyId::Hero1, (320.0, 192.0)),
+                (EnemyId::Infantry3, (321.0, 192.0)),
+            ]),
+        );
+        handler_poll.update(
+            &cfg,
+            frame(&[
+                (EnemyId::Hero1, (600.0, 192.0)),
+                (EnemyId::Infantry3, (320.0, 192.0)),
+            ]),
+        );
+
+        assert_eq!(handler_poll.selected_enemy_id(), Some(EnemyId::Hero1));
+        assert!(
+            handler_poll.estimators[&EnemyId::Hero1]
+                .tracked_enemy
+                .is_some()
+        );
+        assert!(
+            handler_poll.estimators[&EnemyId::Infantry3]
+                .tracked_enemy
+                .is_none()
+        );
     }
 }

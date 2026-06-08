@@ -83,6 +83,7 @@ impl CamCfg {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct EstimatorCfg {
     armor_lost_wait_duration_ms: u64,
+    enemy_lost_wait_duration_ms: u64,
     // top1_activate_w: f64,
     // top2_activate_w: f64,
 }
@@ -91,6 +92,11 @@ impl EstimatorCfg {
     #[inline(always)]
     pub fn lost_wait_duration_ms(&self) -> tokio::time::Duration {
         tokio::time::Duration::from_millis(self.armor_lost_wait_duration_ms)
+    }
+
+    #[inline(always)]
+    pub fn enemy_lost_wait_duration_ms(&self) -> tokio::time::Duration {
+        tokio::time::Duration::from_millis(self.enemy_lost_wait_duration_ms)
     }
 }
 
