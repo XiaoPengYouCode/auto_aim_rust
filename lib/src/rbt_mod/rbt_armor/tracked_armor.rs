@@ -4,7 +4,7 @@ use std::ops::{Deref, DerefMut};
 #[derive(Debug, Clone)]
 pub struct TrackedArmor {
     solved_armor: SolvedArmor,
-    balalbala: f64,
+    _balalbala: f64,
 }
 
 // 在 tracked_armor.rs 中添加
@@ -12,7 +12,7 @@ impl TrackedArmor {
     pub fn new(solved_armor: SolvedArmor, balalbala: f64) -> Self {
         TrackedArmor {
             solved_armor,
-            balalbala,
+            _balalbala: balalbala,
         }
     }
 }

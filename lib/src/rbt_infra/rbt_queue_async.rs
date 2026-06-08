@@ -60,6 +60,14 @@ impl<T> RbtSPSCQueueAsync<T> {
         self.queue.len()
     }
 
+    /// 检查当前队列是否为空
+    ///
+    /// # 返回值
+    /// 队列为空时返回 true
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
     /// 检查当前队列的容量
     ///
     /// # 返回值

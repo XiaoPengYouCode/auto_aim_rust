@@ -62,19 +62,8 @@ pub fn calculate_compensated_pitch(
         return Err("补偿角度不能小于0度");
     }
 
-    // 计算最终角度
-    let mut adj_pitch = pitch_deg + compensation_deg;
-
-    // 对补偿后的角度进行验证
-    // 限制最大仰角为75度，避免过于极端的角度
-    if adj_pitch > 75.0 {
-        adj_pitch = 75.0;
-    }
-
-    // 限制最小仰角为-45度
-    if adj_pitch < -45.0 {
-        adj_pitch = -45.0;
-    }
+    // 限制补偿后的角度，避免过于极端的发射仰角。
+    let adj_pitch = (pitch_deg + compensation_deg).clamp(-45.0, 75.0);
 
     Ok(adj_pitch)
 }

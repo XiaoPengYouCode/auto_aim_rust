@@ -53,8 +53,8 @@ pub enum EnemyFaction {
 
 #[derive(Clone, Copy, Debug)]
 pub struct ArmorRH {
-    radius: f64,
-    height: f64,
+    _radius: f64,
+    _height: f64,
 }
 
 /// 描述装甲板的物理布局
@@ -78,12 +78,12 @@ impl EnemyArmorLayout {
     pub fn from_enemy_id(enemy_id: &EnemyId) -> Self {
         match enemy_id {
             EnemyId::Outpost8 => EnemyArmorLayout::new_3(ArmorRH {
-                radius: 200.0,
-                height: 500.0,
+                _radius: 200.0,
+                _height: 500.0,
             }),
             _ => EnemyArmorLayout::new_4(ArmorRH {
-                radius: 200.0,
-                height: 10.0,
+                _radius: 200.0,
+                _height: 10.0,
             }),
         }
     }

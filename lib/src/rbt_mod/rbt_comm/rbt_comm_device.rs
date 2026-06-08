@@ -46,8 +46,8 @@ pub mod rbt_serial {
     use crate::rbt_infra::rbt_err::RbtResult;
 
     pub struct RbtSerial {
-        serial_stream: Option<SerialStream>,
-        last_record_seq: u8,
+        _serial_stream: Option<SerialStream>,
+        _last_record_seq: u8,
     }
 
     impl RbtComm for RbtSerial {

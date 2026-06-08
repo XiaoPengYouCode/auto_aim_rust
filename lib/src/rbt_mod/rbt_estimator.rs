@@ -10,11 +10,12 @@
 //!
 
 use log::info;
+use std::collections::HashMap;
 
 use crate::rbt_base::rbt_algorithm::rbt_eskf::ESKF;
 use crate::rbt_infra::rbt_cfg::EstimatorCfg;
 use crate::rbt_mod::rbt_armor::tracked_armor::TrackedArmor;
-use crate::rbt_mod::rbt_solver::RbtSolvedResult;
+use crate::rbt_mod::rbt_solver::{RbtSolvedResult, RbtSolvedResults};
 
 use rbt_enemy_dynamic_model::{Enemy, EnemyId, EnemyModel, armor_switch_decision, handle_switch};
 use rbt_estimator_state::EstimatorStateMachine;
@@ -309,5 +310,44 @@ impl RbtEstimator {
                 }
             }
         }
+    }
+}
+
+/// 管理所有敌方单位的估计器。
+#[derive(Debug, Clone)]
+pub struct RbtHandlerPoll {
+    estimators: HashMap<EnemyId, RbtEstimator>,
+}
+
+impl RbtHandlerPoll {
+    pub fn new() -> Self {
+        let mut estimators = HashMap::with_capacity(6);
+        for enemy_id in [
+            EnemyId::Hero1,
+            EnemyId::Engineer2,
+            EnemyId::Infantry3,
+            EnemyId::Infantry4,
+            EnemyId::Sentry7,
+            EnemyId::Outpost8,
+        ] {
+            estimators.insert(enemy_id, RbtEstimator::new(enemy_id));
+        }
+
+        Self { estimators }
+    }
+
+    pub fn update(&mut self, cfg: &EstimatorCfg, solved_enemies: RbtSolvedResults) {
+        for (enemy_id, solved_enemy) in solved_enemies.iter() {
+            self.estimators
+                .entry(*enemy_id)
+                .or_insert_with(|| RbtEstimator::new(*enemy_id))
+                .update(cfg, solved_enemy);
+        }
+    }
+}
+
+impl Default for RbtHandlerPoll {
+    fn default() -> Self {
+        Self::new()
     }
 }

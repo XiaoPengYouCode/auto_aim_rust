@@ -4,7 +4,7 @@ use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
 #[derive(Debug, Clone)]
 pub struct DetectedArmor {
     key_points: [RbtImgPoint2; 5],
-    id: usize, // 当前帧画面唯一 id，用于区分每一块装甲板
+    _id: usize, // 当前帧画面唯一 id，用于区分每一块装甲板
 }
 
 impl DetectedArmor {
@@ -18,7 +18,7 @@ impl DetectedArmor {
     ) -> Self {
         DetectedArmor {
             key_points: [center, lt, lb, rb, rt],
-            id,
+            _id: id,
         }
     }
 
@@ -32,7 +32,7 @@ impl DetectedArmor {
                 RbtImgPoint2::new_screen_pixel(corner[6], corner[7]),
                 RbtImgPoint2::new_screen_pixel(corner[8], corner[9]),
             ],
-            id,
+            _id: id,
         }
     }
 

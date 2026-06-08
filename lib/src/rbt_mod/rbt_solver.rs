@@ -14,13 +14,13 @@ use std::ops::{Deref, DerefMut};
 
 #[derive(Debug, Clone)]
 pub struct RbtSolver {
-    armors: Vec<DetectedArmor>,
+    _armors: Vec<DetectedArmor>,
 }
 
 impl RbtSolver {
     // 根据 ArmorStaticMsg, 构建 RobotSolver
     pub fn new() -> RbtResult<Self> {
-        Ok(Self { armors: vec![] })
+        Ok(Self { _armors: vec![] })
     }
 }
 

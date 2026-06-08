@@ -144,8 +144,8 @@ impl ArmorPnpSolver {
             let (r1, r2) = self.ippe_compute_rotations(j00, j01, j10, j11, v0, v1)?;
 
             // 平移计算使用原始的归一化点
-            let t1 = self.ippe_compute_translation(&p_norm.to_vec(), &r1)?;
-            let t2 = self.ippe_compute_translation(&p_norm.to_vec(), &r2)?;
+            let t1 = self.ippe_compute_translation(&p_norm, &r1)?;
+            let t2 = self.ippe_compute_translation(&p_norm, &r2)?;
 
             let pose1 = na::Isometry3::from_parts(t1.into(), na::UnitQuaternion::from_matrix(&r1));
             let pose2 = na::Isometry3::from_parts(t2.into(), na::UnitQuaternion::from_matrix(&r2));
@@ -249,7 +249,7 @@ impl ArmorPnpSolver {
     /// 计算平移
     fn ippe_compute_translation(
         &self,
-        p_norm: &Vec<na::Point2<f64>>,
+        p_norm: &[na::Point2<f64>],
         r_mat: &na::Matrix3<f64>,
     ) -> Option<na::Vector3<f64>> {
         let n_f64 = p_norm.len() as f64;
