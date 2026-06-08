@@ -135,18 +135,7 @@ impl ArmorDetector {
                 continue;
             }
             let armor_id = *armor_label.id();
-            let corner_coords = [
-                output[[idx, 0]],
-                output[[idx, 1]],
-                output[[idx, 40]],
-                output[[idx, 41]],
-                output[[idx, 41]],
-                output[[idx, 41]],
-                output[[idx, 41]],
-                output[[idx, 41]],
-                output[[idx, 41]],
-                output[[idx, 41]],
-            ];
+            let corner_coords = yolo_output_corner_coords(&output, idx);
             let detected_armor = DetectedArmor::from_corner_coords(&corner_coords, idx_id);
             armors
                 .entry(armor_id)
@@ -221,4 +210,39 @@ pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<HashMap<EnemyId, Vec<De
     info!("Postprocessing time elapsed: {:?}", elapsed);
 
     Ok(result)
+}
+
+fn yolo_output_corner_coords(output: &nd::ArrayView2<'_, f32>, idx: usize) -> [f32; 10] {
+    [
+        output[[idx, 0]],
+        output[[idx, 1]],
+        output[[idx, 40]],
+        output[[idx, 41]],
+        output[[idx, 42]],
+        output[[idx, 43]],
+        output[[idx, 44]],
+        output[[idx, 45]],
+        output[[idx, 46]],
+        output[[idx, 47]],
+    ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_yolo_pose_output_keypoints_to_detected_armor_coords() {
+        let mut output = nd::Array2::<f32>::zeros((1, 48));
+        for col in [0, 1, 40, 41, 42, 43, 44, 45, 46, 47] {
+            output[[0, col]] = col as f32;
+        }
+
+        let output = output.view();
+
+        assert_eq!(
+            yolo_output_corner_coords(&output, 0),
+            [0.0, 1.0, 40.0, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0]
+        );
+    }
 }
