@@ -40,7 +40,7 @@ pub fn calculate_compensated_pitch(
     let time_of_flight = distance_mm / (bullet_speed_mps * pitch_rad.cos());
 
     // 计算目标高度
-    let target_height = distance_mm * pitch_rad.tan();
+    let _target_height = distance_mm * pitch_rad.tan();
 
     // 简化的阻力因子，这里使用一个经验系数
     // 系数可以根据实际测试进行调整

@@ -22,7 +22,7 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
     let _logger_guard = logger_init()?;
     let rec = rr::RecordingStreamBuilder::new("AutoAim").save("rerun-log/test.rrd")?;
     // let rec = rr::RecordingStreamBuilder::new("AutoAim").spawn()?;
-    let enemy_fraction = cfg.game_cfg.enemy_fraction().unwrap();
+    let _enemy_fraction = cfg.game_cfg.enemy_fraction().unwrap();
 
     Ok(AutoAimHandle {
         cfg,
@@ -36,7 +36,7 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
 #[tokio::main]
 async fn main() -> RbtResult<()> {
     // 0. 初始化
-    let mut auto_aim_handle = auto_aim_init().await?;
+    let auto_aim_handle = auto_aim_init().await?;
 
     loop {
         // 1. 执行 detector，使用神经网络模型，寻找所有的装甲板

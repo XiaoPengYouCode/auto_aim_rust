@@ -24,7 +24,6 @@ pub fn find_intersection(l1: &RbtLine2, l2: &RbtLine2) -> na::Point2<f64> {
     let t = t_numerator / denominator;
 
     // 用 t 计算交点
-    let intersection_point = p1 + t * d1;
 
-    intersection_point
+    p1 + t * d1
 }

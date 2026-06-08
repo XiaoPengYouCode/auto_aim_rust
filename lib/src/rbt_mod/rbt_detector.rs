@@ -6,17 +6,13 @@ use ort::{
     session::{Session, SessionOutputs},
     value::TensorRef,
 };
-use std::cmp::PartialEq;
 use std::collections::HashMap;
 
-use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
-use crate::rbt_mod::rbt_armor::{ArmorId, ArmorLabel};
 pub use crate::rbt_mod::rbt_detector::rbt_yolo::{BBox, YOLO_LABEL_TABLE};
 use crate::rbt_mod::rbt_detector::rbt_yolo::{intersection, union};
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
-use crate::rbt_mod::rbt_solver::RbtSolver;
 use crate::{rbt_infra::rbt_cfg, rbt_mod::rbt_armor::detected_armor::DetectedArmor};
 
 pub mod rbt_frame;
@@ -138,7 +134,7 @@ impl ArmorDetector {
             {
                 continue;
             }
-            let armor_id = armor_label.id().clone();
+            let armor_id = *armor_label.id();
             let corner_coords = [
                 output[[idx, 0]],
                 output[[idx, 1]],

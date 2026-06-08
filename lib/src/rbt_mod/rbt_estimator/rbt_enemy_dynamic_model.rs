@@ -14,8 +14,7 @@
 use crate::rbt_base::rbt_algorithm::rbt_eskf::StrategyDynamicModel;
 use crate::rbt_base::rbt_geometry::rbt_cylindrical2::RbtCylindricalPoint2;
 use crate::rbt_mod::rbt_estimator::EstimatorStateMachine;
-use crate::rbt_mod::rbt_solver::{RbtSolvedResult, RbtSolvedResults, RbtSolver};
-use std::fmt::Display;
+use crate::rbt_mod::rbt_solver::{RbtSolvedResult, RbtSolver};
 
 #[derive(Debug, Clone)]
 /// 描述敌方装甲板大或者小
@@ -195,7 +194,7 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
         &self,
         nominal_state: &mut Self::NominalState,
         dt: f64,
-        u: &Self::Input,
+        _u: &Self::Input,
         strategy: &Self::Strategy,
     ) {
         use EstimatorStateMachine::*;
@@ -233,9 +232,9 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
 
     fn state_transition_matrix_f(
         &self,
-        s: &Self::NominalState,
+        _s: &Self::NominalState,
         dt: f64,
-        u: &Self::Input,
+        _u: &Self::Input,
         strategy: &Self::Strategy,
     ) -> na::SMatrix<f64, 11, 11> {
         use EstimatorStateMachine::*;
@@ -292,7 +291,7 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
 
     fn measurement_matrix_h(
         &self,
-        nominal_state: &Self::NominalState,
+        _nominal_state: &Self::NominalState,
         strategy: &Self::Strategy,
     ) -> na::SMatrix<f64, 4, 11> {
         use EstimatorStateMachine::*;
@@ -378,7 +377,7 @@ pub fn armor_switch_decision(current_yaw: f64, predicted_yaw: f64, v_spin: f64, 
     // 云台转速上限和响应时间会影响这个区间
     let max_gimbal_speed = 300.0; // deg/s，云台最大转速
     let response_time = 0.1; // 秒，响应时间
-    let max_angle_change = max_gimbal_speed * response_time;
+    let _max_angle_change = max_gimbal_speed * response_time;
 
     // 如果陀螺速度过快，减小可击打区间甚至直接瞄准中心
     let effective_range = if v_spin.abs() > 200.0 {

@@ -2,15 +2,13 @@ use crate::rbt_base::rbt_algorithm::rbt_ippe::ArmorPnpSolver;
 use crate::rbt_base::rbt_geometry::{
     rbt_cylindrical2::RbtCylindricalPoint2,
     rbt_line2::{RbtLine2, find_intersection},
-    rbt_pose3::{RbtPose3, RbtPoseCoordSys},
+    rbt_pose3::RbtPoseCoordSys,
 };
-use crate::rbt_infra::rbt_cfg;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
 use crate::rbt_mod::rbt_armor::solved_armor::SolvedArmor;
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
-use log::{debug, error, info, warn};
-use nalgebra::Vector2;
+use log::{error, info, warn};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
@@ -98,7 +96,7 @@ pub fn enemys_solver(
             let pnp_solver = ArmorPnpSolver::new().ok_or(RbtError::StringError(
                 "Failed to create ArmorPnpSolver Instant".to_string(),
             ))?;
-            if let Some(camera_pose) = pnp_solver.solve(&armor_key_points_na, &cam_k) {
+            if let Some(camera_pose) = pnp_solver.solve(&armor_key_points_na, cam_k) {
                 let solved_armor = SolvedArmor::new(armor, camera_pose, 0.0, 0.0, 0.0);
                 enemy_solved_armors.push(solved_armor);
             } else {
@@ -120,7 +118,7 @@ pub fn enemys_solver(
             .map(|solved_armor| {
                 let armor_pose = solved_armor.pose();
                 let [armor_x, armor_y] = [armor_pose.translation.x, armor_pose.translation.y];
-                let rot_mat = armor_pose.rotation.to_rotation_matrix().matrix().clone();
+                let rot_mat = *armor_pose.rotation.to_rotation_matrix().matrix();
                 let [armor_2d_pose_a, armor_2d_pose_b] = [rot_mat.m13, rot_mat.m23];
                 RbtLine2 {
                     point: na::Point2::new(armor_x, armor_y),
@@ -155,7 +153,7 @@ pub fn enemys_solver(
                 .with_translation([enemy_center_xy.x as f32, enemy_center_xy.y as f32, 0.0f32]),
         )?;
         for (idx, armor_pose) in enemy_solved_armors.iter().enumerate() {
-            armor_pose.pose().armor_visualize(&rec, idx)?
+            armor_pose.pose().armor_visualize(rec, idx)?
         }
 
         let image =
@@ -187,7 +185,7 @@ fn solve_enemy_center(armors_line_2d: &[RbtLine2]) -> Option<na::Point2<f64>> {
     } else if armors_line_num == 1 {
         Some(handle_single_armor(&armors_line_2d[0]))
     } else if armors_line_num == 2 {
-        Some(handle_multi_armor(&armors_line_2d))
+        Some(handle_multi_armor(armors_line_2d))
     } else {
         warn!("解算出两块以上的装甲板, 跳过");
         None

@@ -13,8 +13,6 @@
 //! - StrategyESKF: ESKF滤波器数学原理实现
 //! - StrategyESKFDynamicModel: 动态模型接口，需要用户实现具体的系统模型
 
-use crate::rbt_mod::rbt_estimator::rbt_estimator_state::EstimatorStateMachine;
-
 #[derive(Debug, Clone)]
 pub struct ESKF<const S_D: usize, const M_D: usize>
 where
@@ -82,7 +80,7 @@ where
         let s = h * self.error_estimate_p * h.transpose() + self.r;
         if let Some(s_inv) = s.try_inverse() {
             // 计算卡尔曼增益
-            let kalman_gain = &self.error_estimate_p * h.transpose() * s_inv;
+            let kalman_gain = self.error_estimate_p * h.transpose() * s_inv;
             // 计算测量残差 y
             let y = model.measurement_residual_y(nominal_state, measurement, strategy);
             // 更新误差状态

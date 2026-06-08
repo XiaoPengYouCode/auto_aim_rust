@@ -34,11 +34,7 @@ impl GameCfg {
     }
 
     pub fn is_blue(&self) -> bool {
-        if self.enemy_fraction.trim() == "blue" {
-            true
-        } else {
-            false
-        }
+        self.enemy_fraction.trim() == "blue"
     }
 }
 

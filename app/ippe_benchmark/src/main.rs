@@ -32,11 +32,11 @@ fn main() -> Result<(), Box<dyn Error>> {
         na::Point2::new(411.5, 239.5),
     ];
 
-    let armor_points = vec![image_points_0, image_points_1];
+    let armor_points = [image_points_0, image_points_1];
 
     for (idx, image_points) in armor_points.iter().enumerate() {
         // 调用求解器
-        if let Some(pose) = pnp_solver.solve(&image_points, &k_matrix) {
+        if let Some(pose) = pnp_solver.solve(image_points, &k_matrix) {
             debug!("Translation Vector: {}", pose.translation.vector);
             debug!("Rotation Matrix: {}", pose.rotation.to_rotation_matrix());
 

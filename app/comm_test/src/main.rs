@@ -2,8 +2,6 @@ mod serial_test;
 mod udp_test;
 mod usb_test;
 
-/// 用于测试电控通讯
-use lib::rbt_mod::rbt_comm::rbt_comm_frame;
 use log::info;
 
 #[tokio::main]
