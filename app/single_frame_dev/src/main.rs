@@ -8,6 +8,7 @@ use lib::rbt_mod::rbt_detector::pipeline;
 use lib::rbt_mod::rbt_estimator::RbtEstimator;
 use lib::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
 use lib::rbt_mod::rbt_solver::enemys_solver;
+use std::path::Path;
 
 struct AutoAimHandle {
     pub cfg: RbtCfg,
@@ -20,7 +21,11 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
     let cfg = RbtCfg::from_toml()?;
     // todo!(这里直接使用了 lazy_static 中读取的配置，还没有替换成最新的 rbt_cfg)
     let _logger_guard = logger_init()?;
-    let rec = rr::RecordingStreamBuilder::new("AutoAim").save("rerun-log/test.rrd")?;
+    let rerun_path = Path::new("rerun-log").join("test.rrd");
+    if let Some(parent) = rerun_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let rec = rr::RecordingStreamBuilder::new("AutoAim").save(rerun_path)?;
     // let rec = rr::RecordingStreamBuilder::new("AutoAim").spawn()?;
     let _enemy_fraction = cfg.game_cfg.enemy_fraction().unwrap();
 

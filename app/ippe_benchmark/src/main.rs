@@ -66,11 +66,11 @@ fn main() -> Result<(), Box<dyn Error>> {
                     .with_colors([rr::Color::from_unmultiplied_rgba(20, 20, 240, 100)])
                         as &dyn rerun::AsComponents,
                     &rerun::Transform3D::default()
-                        .with_axis_length(100.0)
                         .with_translation(armor_translation_rr)
                         .with_rotation(rr::Rotation3D::Quaternion(
                             rr::components::RotationQuat::from(armor_rotation_q_rr),
-                        )),
+                        )) as &dyn rerun::AsComponents,
+                    &rerun::TransformAxes3D::new(100.0),
                 ],
             )
             .unwrap();
@@ -85,7 +85,10 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     rec.log(
         "base_link",
-        &rerun::Transform3D::default().with_axis_length(100.0),
+        &[
+            &rerun::Transform3D::default() as &dyn rerun::AsComponents,
+            &rerun::TransformAxes3D::new(100.0),
+        ],
     )?;
 
     Ok(())

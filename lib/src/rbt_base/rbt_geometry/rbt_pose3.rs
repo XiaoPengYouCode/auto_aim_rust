@@ -114,11 +114,11 @@ impl RbtPose3 {
                 .with_colors([rr::Color::from_unmultiplied_rgba(20, 20, 240, 100)])
                     as &dyn rerun::AsComponents,
                 &rerun::Transform3D::default()
-                    .with_axis_length(200.0)
                     .with_translation(armor_translation_rr)
                     .with_rotation(rr::Rotation3D::Quaternion(
                         rr::components::RotationQuat::from(armor_rotation_q_rr),
-                    )),
+                    )) as &dyn rerun::AsComponents,
+                &rerun::TransformAxes3D::new(200.0),
             ],
         )?;
         Ok(())

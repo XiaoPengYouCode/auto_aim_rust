@@ -144,13 +144,21 @@ pub fn enemys_solver(
         // 1.6 可视化
         rec.log(
             "world/base_link",
-            &rerun::Transform3D::default().with_axis_length(300.0),
+            &[
+                &rerun::Transform3D::default() as &dyn rerun::AsComponents,
+                &rerun::TransformAxes3D::new(300.0),
+            ],
         )?;
         rec.log(
             "world/enemy_link",
-            &rerun::Transform3D::default()
-                .with_axis_length(300.0)
-                .with_translation([enemy_center_xy.x as f32, enemy_center_xy.y as f32, 0.0f32]),
+            &[
+                &rerun::Transform3D::default().with_translation([
+                    enemy_center_xy.x as f32,
+                    enemy_center_xy.y as f32,
+                    0.0f32,
+                ]) as &dyn rerun::AsComponents,
+                &rerun::TransformAxes3D::new(300.0),
+            ],
         )?;
         for (idx, armor_pose) in enemy_solved_armors.iter().enumerate() {
             armor_pose.pose().armor_visualize(rec, idx)?
