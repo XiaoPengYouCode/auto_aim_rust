@@ -3,7 +3,7 @@
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use std::cmp::PartialEq;
 use std::ops::Deref;
-use tracing::{debug, error, warn};
+use log::{debug, error, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RbtImgPoint2CoordSys {

@@ -5,7 +5,7 @@ use lib::rbt_base::rbt_algorithm::rbt_ippe::{
     ARMOR_LIGHT_HEIGHT, ARMOR_LIGHT_WEIGHT, ArmorPnpSolver,
 };
 use std::error::Error;
-use tracing::{debug, error, info};
+use log::{debug, error, info};
 
 fn main() -> Result<(), Box<dyn Error>> {
     let rec = rr::RecordingStreamBuilder::new("pnp_visualizer")

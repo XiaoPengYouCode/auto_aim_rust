@@ -1,7 +1,7 @@
 use tokio::time::Instant;
 
 use crate::rbt_infra::rbt_global::FAILED_COUNT;
-use tracing::{debug, error, warn};
+use log::{debug, error, warn};
 
 pub struct RbtFrame {
     time: Instant,

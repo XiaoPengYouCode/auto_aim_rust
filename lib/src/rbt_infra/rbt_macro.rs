@@ -4,7 +4,7 @@
 macro_rules! rbt_bail_error {
     ($err: expr) => {
         let e = $err;
-        tracing::error!("{}", $err);
+        log::error!("{}", $err);
         return Err(e.into());
     };
 }

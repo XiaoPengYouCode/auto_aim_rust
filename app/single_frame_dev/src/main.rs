@@ -1,11 +1,9 @@
 extern crate nalgebra as na;
 extern crate rerun as rr;
 
-use tracing_appender::non_blocking::WorkerGuard;
-
 use lib::rbt_infra::rbt_cfg::RbtCfg;
 use lib::rbt_infra::rbt_err::RbtResult;
-use lib::rbt_infra::rbt_log::logger_init;
+use lib::rbt_infra::rbt_log::{logger_init, RbtLoggerGuard};
 use lib::rbt_mod::rbt_detector::pipeline;
 use lib::rbt_mod::rbt_estimator::RbtEstimator;
 use lib::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
@@ -14,14 +12,14 @@ use lib::rbt_mod::rbt_solver::enemys_solver;
 struct AutoAimHandle {
     pub cfg: RbtCfg,
     pub rec: rr::RecordingStream,
-    _logger_guard: Option<WorkerGuard>,
+    _logger_guard: Option<RbtLoggerGuard>,
 }
 
 /// 执行所有 init 步骤
 async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
     let cfg = RbtCfg::from_toml()?;
     // todo!(这里直接使用了 lazy_static 中读取的配置，还没有替换成最新的 rbt_cfg)
-    let _logger_guard = logger_init().await?;
+    let _logger_guard = logger_init()?;
     let rec = rr::RecordingStreamBuilder::new("AutoAim").save("rerun-log/test.rrd")?;
     // let rec = rr::RecordingStreamBuilder::new("AutoAim").spawn()?;
     let enemy_fraction = cfg.game_cfg.enemy_fraction().unwrap();

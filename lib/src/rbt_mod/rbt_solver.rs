@@ -12,7 +12,7 @@ use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
 use nalgebra::Vector2;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use tracing::{debug, error, info, warn};
+use log::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct RbtSolver {

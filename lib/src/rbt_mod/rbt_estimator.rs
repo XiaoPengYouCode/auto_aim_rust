@@ -13,7 +13,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::{Deref, DerefMut};
-use tracing::info;
+use log::info;
 
 use crate::rbt_base::rbt_algorithm::rbt_eskf::{ESKF, StrategyDynamicModel};
 use crate::rbt_base::rbt_geometry::rbt_cylindrical2::RbtCylindricalPoint2;

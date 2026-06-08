@@ -8,17 +8,17 @@ use lib::rbt_infra::rbt_err::RbtResult;
 use lib::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
 use lib::rbt_mod::rbt_detector::rbt_frame::RbtFrame;
+use log::info;
 use ort::execution_providers;
 use ort::session::Session;
 use std::sync::Arc;
-use tracing::info;
 
 pub mod rbt_threads;
 
 #[tokio::main]
 async fn main() -> RbtResult<()> {
     // init logger
-    let _logger_guard = rbt_log::logger_init().await?;
+    let _logger_guard = rbt_log::logger_init()?;
     // init rerun logger
     // let rec = rr::RecordingStreamBuilder::new("rbt_async").save("test.rrd")?;
 

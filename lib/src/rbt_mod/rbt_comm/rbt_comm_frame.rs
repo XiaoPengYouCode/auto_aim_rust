@@ -1,7 +1,7 @@
 /// 该文件定义了上下位机通讯的数据结构
 /// 卢钟瑾 2025.08.06
 use crate::rbt_infra::rbt_err::{CommError, RbtResult};
-use tracing::warn;
+use log::warn;
 
 /// 帧结构 trait
 /// 类型大小确定

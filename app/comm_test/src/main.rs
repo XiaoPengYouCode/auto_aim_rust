@@ -4,13 +4,11 @@ mod usb_test;
 
 /// 用于测试电控通讯
 use lib::rbt_mod::rbt_comm::rbt_comm_frame;
-use tracing::info;
+use log::info;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_max_level(tracing::Level::DEBUG)
-        .init();
+    logforth::starter_log::stdout().apply();
 
     // 接收线程
     let sens_handle = tokio::spawn(async move {

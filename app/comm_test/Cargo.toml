@@ -8,5 +8,5 @@ license.workspace = true
 [dependencies]
 lib = { path = "../../lib" }
 tokio = {workspace = true}
-tracing = {workspace = true}
-tracing-subscriber = {workspace = true}
+log = {workspace = true}
+logforth = {workspace = true}
