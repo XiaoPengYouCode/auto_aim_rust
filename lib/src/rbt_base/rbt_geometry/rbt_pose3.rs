@@ -1,7 +1,7 @@
 use crate::rbt_base::rbt_algorithm::rbt_ippe::{ARMOR_LIGHT_HEIGHT, ARMOR_LIGHT_WEIGHT};
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
-use na::{Isometry3, Vector3};
 use log::error;
+use na::{Isometry3, Vector3};
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum RbtPoseCoordSys {

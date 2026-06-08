@@ -151,7 +151,12 @@ impl Enemy {
         ]
     }
     pub fn get_eskf_measurement(&self) -> [f64; 4] {
-        [self.enemy_cy.theta_d, self.enemy_cy.rho, self.enemy_yaw, self.nominal_state.armor_height]
+        [
+            self.enemy_cy.theta_d,
+            self.enemy_cy.rho,
+            self.enemy_yaw,
+            self.nominal_state.armor_height,
+        ]
     }
 
     pub fn get_mut_nominal_state(&mut self) -> &mut EnemyESKFState {
@@ -162,16 +167,16 @@ impl Enemy {
 /// 用于 Enemy 和 EnemyEstimator 之间的数据交换
 #[derive(Debug, Clone)]
 pub struct EnemyESKFState {
-    pub theta: f64,      // 车体中心相对于世界坐标系的角度 deg
-    pub distance: f64,   // 敌方车体中心相对于己方中心的距离 mm
-    pub v_tang: f64,     // 切向速度 mm/s
-    pub v_norm: f64,     // 法向速度 mm/s
-    pub v_spin: f64,     // 陀螺速度 deg/s
-    pub a_tang: f64,     // 切向加速度 mm/s^2
-    pub a_norm: f64,     // 法向加速度 mm/s^2
-    pub a_spin: f64,     // 陀螺加速度 deg/s^2
-    pub armor_yaw: f64,  // 追踪装甲板的 yaw 角 deg
-    pub armor_r: f64,    // 追踪装甲板的半径 mm
+    pub theta: f64,        // 车体中心相对于世界坐标系的角度 deg
+    pub distance: f64,     // 敌方车体中心相对于己方中心的距离 mm
+    pub v_tang: f64,       // 切向速度 mm/s
+    pub v_norm: f64,       // 法向速度 mm/s
+    pub v_spin: f64,       // 陀螺速度 deg/s
+    pub a_tang: f64,       // 切向加速度 mm/s^2
+    pub a_norm: f64,       // 法向加速度 mm/s^2
+    pub a_spin: f64,       // 陀螺加速度 deg/s^2
+    pub armor_yaw: f64,    // 追踪装甲板的 yaw 角 deg
+    pub armor_r: f64,      // 追踪装甲板的半径 mm
     pub armor_height: f64, // 追踪装甲板的高度 mm
 }
 
@@ -198,8 +203,10 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
             Init | Sleep | WakeUp => {}
             Track { .. } | Recovery => {
                 // 匀加速模型更新
-                nominal_state.theta += nominal_state.v_spin * dt + 0.5 * nominal_state.a_spin * dt * dt;
-                nominal_state.distance += nominal_state.v_norm * dt + 0.5 * nominal_state.a_norm * dt * dt;
+                nominal_state.theta +=
+                    nominal_state.v_spin * dt + 0.5 * nominal_state.a_spin * dt * dt;
+                nominal_state.distance +=
+                    nominal_state.v_norm * dt + 0.5 * nominal_state.a_norm * dt * dt;
                 nominal_state.v_tang += nominal_state.a_tang * dt;
                 nominal_state.v_norm += nominal_state.a_norm * dt;
                 nominal_state.v_spin += nominal_state.a_spin * dt;
@@ -212,8 +219,10 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
             }
             Lost { .. } => {
                 // 纯依靠模型进行预测
-                nominal_state.theta += nominal_state.v_spin * dt + 0.5 * nominal_state.a_spin * dt * dt;
-                nominal_state.distance += nominal_state.v_norm * dt + 0.5 * nominal_state.a_norm * dt * dt;
+                nominal_state.theta +=
+                    nominal_state.v_spin * dt + 0.5 * nominal_state.a_spin * dt * dt;
+                nominal_state.distance +=
+                    nominal_state.v_norm * dt + 0.5 * nominal_state.a_norm * dt * dt;
                 nominal_state.v_tang += nominal_state.a_tang * dt;
                 nominal_state.v_norm += nominal_state.a_norm * dt;
                 nominal_state.v_spin += nominal_state.a_spin * dt;
@@ -231,9 +240,7 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
     ) -> na::SMatrix<f64, 11, 11> {
         use EstimatorStateMachine::*;
         match strategy {
-            Init | Sleep | WakeUp => {
-                na::SMatrix::<f64, 11, 11>::identity()
-            }
+            Init | Sleep | WakeUp => na::SMatrix::<f64, 11, 11>::identity(),
             Track { .. } | Recovery => {
                 let mut f = na::SMatrix::<f64, 11, 11>::identity();
                 // theta
@@ -260,9 +267,7 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
                 // armor_r, armor_height 保持不变
                 f
             }
-            Switching => {
-                na::SMatrix::<f64, 11, 11>::identity()
-            }
+            Switching => na::SMatrix::<f64, 11, 11>::identity(),
             Lost { .. } => {
                 let mut f = na::SMatrix::<f64, 11, 11>::identity();
                 // 与Aim相同，但不使用测量更新
@@ -292,9 +297,7 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
     ) -> na::SMatrix<f64, 4, 11> {
         use EstimatorStateMachine::*;
         match strategy {
-            Init | Sleep | WakeUp => {
-                na::SMatrix::<f64, 4, 11>::zeros()
-            }
+            Init | Sleep | WakeUp => na::SMatrix::<f64, 4, 11>::zeros(),
             Track { .. } | Lost { .. } | Recovery => {
                 let mut h = na::SMatrix::<f64, 4, 11>::zeros();
                 h[(0, 0)] = 1.0; // theta
@@ -303,9 +306,7 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
                 h[(3, 10)] = 1.0; // armor_height
                 h
             }
-            Switching => {
-                na::SMatrix::<f64, 4, 11>::zeros()
-            }
+            Switching => na::SMatrix::<f64, 4, 11>::zeros(),
         }
     }
 
@@ -317,9 +318,7 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
     ) -> na::SVector<f64, 4> {
         use EstimatorStateMachine::*;
         match strategy {
-            Init | Sleep | WakeUp => {
-                na::SVector::<f64, 4>::zeros()
-            }
+            Init | Sleep | WakeUp => na::SVector::<f64, 4>::zeros(),
             Track { .. } | Recovery => {
                 let predicted_theta = nominal_state.theta % (2.0 * std::f64::consts::PI);
                 let predicted_distance = nominal_state.distance;
@@ -333,12 +332,8 @@ impl StrategyDynamicModel<11, 4> for EnemyModel {
                     z[3] - predicted_armor_height,
                 ])
             }
-            Switching => {
-                na::SVector::<f64, 4>::zeros()
-            }
-            Lost { .. } => {
-                na::SVector::<f64, 4>::zeros()
-            }
+            Switching => na::SVector::<f64, 4>::zeros(),
+            Lost { .. } => na::SVector::<f64, 4>::zeros(),
         }
     }
 
@@ -417,7 +412,11 @@ pub fn handle_switch(current_yaw: f64, enemy_layout: &EnemyArmorLayout) -> f64 {
         EnemyArmorLayout::Tripod3(_) => {
             // 前哨站3块装甲板布局，间隔120度
             let next_yaw = (current_yaw + 120.0) % 360.0;
-            log::info!("Switching outpost armor: {:.1}° -> {:.1}°", current_yaw, next_yaw);
+            log::info!(
+                "Switching outpost armor: {:.1}° -> {:.1}°",
+                current_yaw,
+                next_yaw
+            );
             next_yaw
         }
     }

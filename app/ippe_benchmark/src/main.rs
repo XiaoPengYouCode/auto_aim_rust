@@ -4,8 +4,8 @@ use rerun as rr;
 use lib::rbt_base::rbt_algorithm::rbt_ippe::{
     ARMOR_LIGHT_HEIGHT, ARMOR_LIGHT_WEIGHT, ArmorPnpSolver,
 };
-use std::error::Error;
 use log::{debug, error, info};
+use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let rec = rr::RecordingStreamBuilder::new("pnp_visualizer")
