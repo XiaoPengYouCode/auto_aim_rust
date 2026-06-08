@@ -55,7 +55,7 @@ pub mod rbt_serial {
             Ok(())
         }
 
-        fn send(&mut self, data: &[u8]) -> RbtResult<()> {
+        fn send(&mut self, _data: &[u8]) -> RbtResult<()> {
             Ok(())
         }
 

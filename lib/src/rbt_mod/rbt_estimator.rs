@@ -10,20 +10,13 @@
 //!
 
 use log::info;
-use serde::Serialize;
-use std::collections::HashMap;
-use std::fmt::Display;
-use std::ops::{Deref, DerefMut};
 
-use crate::rbt_base::rbt_algorithm::rbt_eskf::{ESKF, StrategyDynamicModel};
-use crate::rbt_base::rbt_geometry::rbt_cylindrical2::RbtCylindricalPoint2;
+use crate::rbt_base::rbt_algorithm::rbt_eskf::ESKF;
 use crate::rbt_infra::rbt_cfg::EstimatorCfg;
 use crate::rbt_mod::rbt_armor::tracked_armor::TrackedArmor;
-use crate::rbt_mod::rbt_solver::{RbtSolvedResult, RbtSolvedResults};
+use crate::rbt_mod::rbt_solver::RbtSolvedResult;
 
-use rbt_enemy_dynamic_model::{
-    Enemy, EnemyESKFState, EnemyId, EnemyModel, armor_switch_decision, handle_switch,
-};
+use rbt_enemy_dynamic_model::{Enemy, EnemyId, EnemyModel, armor_switch_decision, handle_switch};
 use rbt_estimator_state::EstimatorStateMachine;
 
 /// 动力学模型
@@ -31,7 +24,7 @@ pub mod rbt_enemy_dynamic_model;
 
 pub mod rbt_estimator_state {
     use crate::rbt_infra::rbt_cfg::EstimatorCfg;
-    use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::handle_switch;
+
     use crate::rbt_mod::rbt_solver::RbtSolvedResult;
 
     /// 顶层状态机
@@ -221,9 +214,9 @@ impl RbtEstimator {
     // 修改：添加jump参数处理装甲板切换
     pub fn handle_state(
         &mut self,
-        cfg: &EstimatorCfg,
+        _cfg: &EstimatorCfg,
         solved_enemy: &Option<RbtSolvedResult>,
-        jump: bool,
+        _jump: bool,
     ) {
         use EstimatorStateMachine::*;
 
@@ -290,7 +283,7 @@ impl RbtEstimator {
                 // TODO: 实现云台到位检查逻辑
             }
             Lost { .. } => {
-                if let Some(enemy) = self.tracked_enemy.as_mut() {
+                if let Some(_enemy) = self.tracked_enemy.as_mut() {
                     let enemy = self.tracked_enemy.as_mut().unwrap();
                     let input = enemy.get_eskf_input();
                     let nominal_state = enemy.get_mut_nominal_state();
@@ -299,7 +292,7 @@ impl RbtEstimator {
                 }
             }
             Recovery => {
-                if let Some(enemy) = self.tracked_enemy.as_mut() {
+                if let Some(_enemy) = self.tracked_enemy.as_mut() {
                     let enemy = self.tracked_enemy.as_mut().unwrap();
                     let input = enemy.get_eskf_input();
                     let measurement = enemy.get_eskf_measurement();

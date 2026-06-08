@@ -1,7 +1,7 @@
 use crate::rbt_base::rbt_algorithm::rbt_ippe::{ARMOR_LIGHT_HEIGHT, ARMOR_LIGHT_WEIGHT};
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use log::error;
-use na::{Isometry3, Vector3};
+use na::Isometry3;
 
 #[derive(PartialEq, Clone, Debug)]
 pub enum RbtPoseCoordSys {
@@ -29,36 +29,33 @@ impl RbtPoseCoordSys {
                 let pitch_rad = 0_f64.to_radians();
                 let pitch_rotation = na::Rotation3::from_euler_angles(0.0, pitch_rad, 0.0);
                 let total_rotation = pitch_rotation * CAMERA_AXES_TO_BODY_AXES_ROTATION;
-                let isometry = na::Isometry3::from_parts(
+
+                na::Isometry3::from_parts(
                     translation,
                     <na::UnitQuaternion<f64>>::from(total_rotation),
-                );
-                isometry
+                )
             }
             (Self::BaseXyz, Self::WorldXyz) => {
                 // 假设Yaw为0，实际使用时应根据机器人当前朝向设置
                 let yaw_rad = 0_f64.to_radians();
                 let yaw_rotation = na::Rotation3::from_euler_angles(0.0, 0.0, yaw_rad);
-                let isometry = na::Isometry3::from_parts(
+
+                na::Isometry3::from_parts(
                     na::Translation3::new(0.0, 0.0, 0.0),
                     <na::UnitQuaternion<f64>>::from(yaw_rotation),
-                );
-                isometry
+                )
             }
             (Self::WorldXyz, Self::BaseXyz) => {
                 // 反向转换
                 let yaw_rad = 0_f64.to_radians();
                 let yaw_rotation = na::Rotation3::from_euler_angles(0.0, 0.0, -yaw_rad);
-                let isometry = na::Isometry3::from_parts(
+
+                na::Isometry3::from_parts(
                     na::Translation3::new(0.0, 0.0, 0.0),
                     <na::UnitQuaternion<f64>>::from(yaw_rotation),
-                );
-                isometry
+                )
             }
-            _ => {
-                let isometry = Isometry3::new(na::Vector3::new(0.0, 0.0, 0.0), na::zero());
-                isometry
-            }
+            _ => Isometry3::new(na::Vector3::new(0.0, 0.0, 0.0), na::zero()),
         }
     }
 }

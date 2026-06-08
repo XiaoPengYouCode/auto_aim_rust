@@ -32,7 +32,7 @@ impl RbtPoint3 {
     }
 
     pub fn trans_to(&mut self, target_coord_sys: &RbtPoint3CoordSys) {
-        self.point = point_tansfer(&self.point, &self.coord_sys, &target_coord_sys);
+        self.point = point_tansfer(&self.point, &self.coord_sys, target_coord_sys);
         self.coord_sys = target_coord_sys.clone();
     }
 }

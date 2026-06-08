@@ -17,6 +17,12 @@ pub enum RbtFrameStage {
     Init,
 }
 
+impl Default for RbtFrame {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RbtFrame {
     pub fn new() -> Self {
         Self {
@@ -46,11 +52,11 @@ impl RbtFrame {
         self.time
     }
 
-    pub fn pre_data(&mut self) -> nd::ArrayViewMut4<f32> {
+    pub fn pre_data(&mut self) -> nd::ArrayViewMut4<'_, f32> {
         self.data.pre_infer.view_mut()
     }
 
-    pub fn infer_data(&mut self) -> nd::ArrayViewMut3<f32> {
+    pub fn infer_data(&mut self) -> nd::ArrayViewMut3<'_, f32> {
         self.data.infer_post.view_mut()
     }
 

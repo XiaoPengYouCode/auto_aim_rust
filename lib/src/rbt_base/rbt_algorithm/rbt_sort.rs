@@ -133,11 +133,7 @@ pub fn hungarian_algorithm(cost_matrix: &[Vec<f64>]) -> (Vec<Option<usize>>, f64
 
                 // 更新标记
                 for (i, j) in path {
-                    if starred[i][j] {
-                        starred[i][j] = false;
-                    } else {
-                        starred[i][j] = true;
-                    }
+                    starred[i][j] = !starred[i][j];
                 }
 
                 // 清除所有标记
@@ -201,8 +197,8 @@ fn find_augmenting_path(
     start_col: usize,
     starred: &[Vec<bool>],
     primed: &[Vec<bool>],
-    row_covered: &[bool],
-    col_covered: &[bool],
+    _row_covered: &[bool],
+    _col_covered: &[bool],
 ) -> Vec<(usize, usize)> {
     let rows = starred.len();
     let cols = starred[0].len();

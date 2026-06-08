@@ -330,8 +330,8 @@ impl ArmorPnpSolver {
 
             sum_sq_err += (uvs[i].x - u_repro).powi(2) + (uvs[i].y - v_repro).powi(2);
         }
-        let ass_err = (sum_sq_err / 4.0).sqrt();
-        ass_err
+
+        (sum_sq_err / 4.0).sqrt()
     }
 }
 
