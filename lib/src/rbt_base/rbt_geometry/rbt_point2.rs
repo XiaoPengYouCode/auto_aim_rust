@@ -1,9 +1,9 @@
 // 目前暂时考虑尽量使用基础类型来表示数据，在方法中转换为 nalgebra 进行转换，并返回基础数据类型
 
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
+use log::{debug, error, warn};
 use std::cmp::PartialEq;
 use std::ops::Deref;
-use log::{debug, error, warn};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum RbtImgPoint2CoordSys {

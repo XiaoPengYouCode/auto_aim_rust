@@ -9,10 +9,10 @@ use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
 use crate::rbt_mod::rbt_armor::solved_armor::SolvedArmor;
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
+use log::{debug, error, info, warn};
 use nalgebra::Vector2;
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
-use log::{debug, error, info, warn};
 
 #[derive(Debug, Clone)]
 pub struct RbtSolver {

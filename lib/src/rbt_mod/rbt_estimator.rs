@@ -9,11 +9,11 @@
 //! - RbtHandlerPoll: 所有敌方单位估计器的管理池
 //!
 
+use log::info;
 use serde::Serialize;
 use std::collections::HashMap;
 use std::fmt::Display;
 use std::ops::{Deref, DerefMut};
-use log::info;
 
 use crate::rbt_base::rbt_algorithm::rbt_eskf::{ESKF, StrategyDynamicModel};
 use crate::rbt_base::rbt_geometry::rbt_cylindrical2::RbtCylindricalPoint2;
@@ -130,7 +130,7 @@ pub struct RbtEstimator {
     eskf: ESKF<11, 4>, // 原始 ESKF 求解器
     enemy_model: EnemyModel,
     pub enemy_id: EnemyId,
-    pub fire: bool, // 当前是否开火
+    pub fire: bool,             // 当前是否开火
     pub single_or_double: bool, // 单或双装甲板更新，用于设置ESKF测量噪声
 }
 
@@ -155,11 +155,7 @@ impl RbtEstimator {
         }
     }
 
-    pub fn update(
-        &mut self,
-        cfg: &EstimatorCfg,
-        solved_enemy: &Option<RbtSolvedResult>,
-    ) {
+    pub fn update(&mut self, cfg: &EstimatorCfg, solved_enemy: &Option<RbtSolvedResult>) {
         // 1. 保存上一帧状态
         self.last_tracked_enemy = self.tracked_enemy.clone();
         self.last_tracked_armor = self.tracked_armor.clone();
@@ -194,7 +190,10 @@ impl RbtEstimator {
         // 5. 装甲板切换决策
         let jump = if let Some(enemy) = &self.tracked_enemy {
             armor_switch_decision(
-                self.tracked_armor.as_ref().map(|a| a.enemy_yaw).unwrap_or(0.0),
+                self.tracked_armor
+                    .as_ref()
+                    .map(|a| a.enemy_yaw)
+                    .unwrap_or(0.0),
                 enemy.nominal_state.armor_yaw,
                 enemy.nominal_state.v_spin,
                 0.01, // dt
@@ -220,13 +219,18 @@ impl RbtEstimator {
     }
 
     // 修改：添加jump参数处理装甲板切换
-    pub fn handle_state(&mut self, cfg: &EstimatorCfg, solved_enemy: &Option<RbtSolvedResult>, jump: bool) {
+    pub fn handle_state(
+        &mut self,
+        cfg: &EstimatorCfg,
+        solved_enemy: &Option<RbtSolvedResult>,
+        jump: bool,
+    ) {
         use EstimatorStateMachine::*;
 
         // 仅在有有效解时解包，否则直接返回
         let solved_enemy = match solved_enemy {
             Some(solved) => solved,
-            None => return // 无有效解时不处理
+            None => return, // 无有效解时不处理
         };
 
         info!("State: {}", self.state);
@@ -254,8 +258,11 @@ impl RbtEstimator {
                     // 处理装甲板跳变
                     if *state_jump {
                         let new_target_yaw = handle_switch(
-                            self.tracked_armor.as_ref().map(|a| a.enemy_yaw).unwrap_or(0.0),
-                            &armor_layout
+                            self.tracked_armor
+                                .as_ref()
+                                .map(|a| a.enemy_yaw)
+                                .unwrap_or(0.0),
+                            &armor_layout,
                         );
                         // 更新跟踪装甲板的目标角度
                         if let Some(armor) = &mut self.tracked_armor {
@@ -267,11 +274,14 @@ impl RbtEstimator {
                         }
                     }
 
-                    self.eskf.predict(&self.enemy_model, nominal_state, &input, &self.state);
+                    self.eskf
+                        .predict(&self.enemy_model, nominal_state, &input, &self.state);
                     // 恢复状态增加过程噪声加快收敛
                     self.eskf.set_r(na::SMatrix::<f64, 4, 4>::identity() * 0.5);
-                    self.eskf.predict(&self.enemy_model, nominal_state, &input, &self.state);
-                    self.eskf.update(&self.enemy_model, nominal_state, &measurement, &self.state);
+                    self.eskf
+                        .predict(&self.enemy_model, nominal_state, &input, &self.state);
+                    self.eskf
+                        .update(&self.enemy_model, nominal_state, &measurement, &self.state);
                     self.eskf.set_r(na::SMatrix::<f64, 4, 4>::identity() * 0.1); // 恢复默认噪声
                 }
             }
@@ -297,7 +307,8 @@ impl RbtEstimator {
 
                     // 增加过程噪声以加快收敛
                     self.eskf.set_r(na::SMatrix::<f64, 4, 4>::identity() * 0.5);
-                    self.eskf.predict(&self.enemy_model, nominal_state, &input, &self.state);
+                    self.eskf
+                        .predict(&self.enemy_model, nominal_state, &input, &self.state);
                     self.eskf
                         .update(&self.enemy_model, nominal_state, &measurement, &self.state);
                     // 恢复默认过程噪声

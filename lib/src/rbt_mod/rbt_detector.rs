@@ -1,4 +1,5 @@
 use image::{DynamicImage, GenericImageView, ImageReader};
+use log::{error, info};
 use ndarray as nd;
 use ort::{
     execution_providers, inputs,
@@ -7,7 +8,6 @@ use ort::{
 };
 use std::cmp::PartialEq;
 use std::collections::HashMap;
-use log::{error, info};
 
 use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};

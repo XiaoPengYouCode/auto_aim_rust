@@ -3,7 +3,7 @@ extern crate rerun as rr;
 
 use lib::rbt_infra::rbt_cfg::RbtCfg;
 use lib::rbt_infra::rbt_err::RbtResult;
-use lib::rbt_infra::rbt_log::{logger_init, RbtLoggerGuard};
+use lib::rbt_infra::rbt_log::{RbtLoggerGuard, logger_init};
 use lib::rbt_mod::rbt_detector::pipeline;
 use lib::rbt_mod::rbt_estimator::RbtEstimator;
 use lib::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;

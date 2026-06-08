@@ -1,9 +1,9 @@
+use log::{error, info, warn};
 use ort::inputs;
 use ort::value::TensorRef;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
-use log::{error, info, warn};
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
 // use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
