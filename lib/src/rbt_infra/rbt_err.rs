@@ -30,8 +30,11 @@ pub enum RbtError {
     TokioIoError(#[from] std::io::Error),
 
     // 日志相关错误
-    #[error("Tracing subscriber env filter parse error: {0}")]
-    TracingSubscriberEnvFilterParseError(#[from] tracing_subscriber::filter::ParseError),
+    #[error("Logforth error: {0}")]
+    LogforthError(#[from] logforth::Error),
+
+    #[error("Failed to initialize logger: {0}")]
+    LoggerInitError(String),
 
     // 同步相关错误
     #[error("Failed to lock mutex: {0}")]

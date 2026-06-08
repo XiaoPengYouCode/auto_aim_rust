@@ -1,70 +1,150 @@
-use tracing::info;
-use tracing_appender::non_blocking::WorkerGuard;
-use tracing_subscriber::Layer;
-use tracing_subscriber::{fmt::layer, layer::SubscriberExt, registry, util::SubscriberInitExt};
+use std::sync::Arc;
 
-use crate::rbt_infra::rbt_err::RbtResult;
+use log::info;
+use logforth::append;
+use logforth::bridge::log::LogBridge;
+use logforth::core::Logger;
+use logforth::filter::RustLogFilter;
+use logforth::layout::TextLayout;
+use logforth_append_async::AsyncBuilder;
+use logforth_append_file::FileBuilder;
+
+use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 
-/// 注意函数的调用方只需要维持 Option 就行
-/// 可以用于区分是否存在 appender 守护
-/// 在本场景中没有作用，无需解包
-pub async fn logger_init() -> RbtResult<Option<WorkerGuard>> {
+pub struct RbtLoggerGuard {
+    logger: Arc<Logger>,
+}
+
+impl Drop for RbtLoggerGuard {
+    fn drop(&mut self) {
+        self.logger.flush();
+    }
+}
+
+/// 初始化日志系统
+///
+/// 使用 logforth 作为日志后端，支持控制台和文件双输出。
+/// 控制台使用带颜色的 TextLayout，文件使用无颜色版本。
+/// 文件日志按小时自动滚动，异步写入不阻塞主线程。
+///
+/// 返回 RbtLoggerGuard，持有它可确保退出时日志被 flush。
+/// 调用方只需维持 Option<RbtLoggerGuard> 即可。
+pub fn logger_init() -> RbtResult<Option<RbtLoggerGuard>> {
     let logger_cfg = GENERIC_RBT_CFG.read().unwrap().logger_cfg.clone();
     if !logger_cfg.file_log_enable && !logger_cfg.console_log_enable {
         return Ok(None);
     }
 
-    let terminal_log_filter =
-        tracing_subscriber::EnvFilter::try_new(&logger_cfg.console_log_filter)?;
-    let file_log_filter = tracing_subscriber::EnvFilter::try_new(&logger_cfg.file_log_filter)?;
+    let mut logger_builder = logforth::core::builder();
 
-    let console_layer = if logger_cfg.console_log_enable {
-        Some(
-            layer()
-                .with_writer(std::io::stdout)
-                .without_time()
-                .with_line_number(true)
-                .with_filter(terminal_log_filter),
-        )
-    } else {
-        None
-    };
+    if logger_cfg.console_log_enable {
+        let console_filter: RustLogFilter = logger_cfg.console_log_filter.as_str().into();
+        let console_appender = append::Stdout::default().with_layout(TextLayout::default());
+        logger_builder = logger_builder
+            .dispatch(|dispatch| dispatch.filter(console_filter).append(console_appender));
+    }
 
-    let (file_layer, guard) = if logger_cfg.file_log_enable {
-        // 获取当前时间戳，用于生成唯一文件名
+    if logger_cfg.file_log_enable {
+        let file_filter: RustLogFilter = logger_cfg.file_log_filter.as_str().into();
+
+        // 使用当前时间生成日志目录和文件名（兼容原有目录结构）
         let now = chrono::Local::now();
-        let file_name = format!("{}", now.format("%H:%M:%S")); // 添加 .log 后缀
+        let file_name = format!("{}", now.format("%H:%M:%S"));
         let directory_name = format!("log/{}", now.format("%Y/%m/%d"));
-        tokio::fs::create_dir_all(&directory_name).await?; // 确保目录存在
+        std::fs::create_dir_all(&directory_name)
+            .map_err(|e| RbtError::LoggerInitError(e.to_string()))?;
 
-        let file_appender = tracing_appender::rolling::never(directory_name, file_name); // 使用 never
-        let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
-        (
-            Some(
-                layer()
-                    .with_writer(non_blocking)
-                    .with_filter(file_log_filter),
-            ),
-            Some(guard),
-        )
-    } else {
-        (None, None)
-    };
+        let file_appender = FileBuilder::new(directory_name, file_name)
+            .layout(TextLayout::default().no_color())
+            .build()
+            .map_err(|e| RbtError::LoggerInitError(e.to_string()))?;
 
-    registry::Registry::default()
-        .with(console_layer)
-        .with(file_layer)
-        .init();
+        let async_file_appender = AsyncBuilder::new("rbt-log-file")
+            .buffered_lines_limit(Some(8192))
+            .overflow_block()
+            .append(file_appender)
+            .build();
+
+        logger_builder = logger_builder
+            .dispatch(|dispatch| dispatch.filter(file_filter).append(async_file_appender));
+    }
+
+    let logger = Arc::new(logger_builder.build());
+    let bridge = LogBridge::new(logger.clone());
+    log::set_boxed_logger(Box::new(bridge))
+        .map_err(|err| RbtError::LoggerInitError(err.to_string()))?;
+    log::set_max_level(log::LevelFilter::Trace);
 
     info!(
-        "log initialized with filter: {}",
+        "log initialized with console filter: {}",
         logger_cfg.console_log_filter
+    );
+    info!(
+        "log initialized with file filter: {}",
+        logger_cfg.file_log_filter
     );
     info!("log initialized with output:");
     info!(
         "file_log_enable: {}, console_log_enable: {}",
         logger_cfg.file_log_enable, logger_cfg.console_log_enable
     );
-    Ok(guard)
+
+    Ok(Some(RbtLoggerGuard { logger }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use log::{debug, error, info, trace, warn};
+    use std::fs;
+
+    /// 测试 logger_init 完整流程：
+    /// 1. 成功初始化
+    /// 2. 各日志级别正常输出
+    /// 3. 日志文件正确创建
+    /// 4. RbtLoggerGuard drop 不 panic
+    #[test]
+    fn test_logger_init_full_flow() {
+        // 初始化
+        let guard = logger_init().expect("logger_init should succeed");
+        assert!(guard.is_some(), "guard should be Some when logging enabled");
+
+        // 各日志级别
+        trace!("[test] this is a trace message");
+        debug!("[test] this is a debug message");
+        info!("[test] this is an info message");
+        warn!("[test] this is a warn message");
+        error!("[test] this is an error message");
+
+        // 带参数格式化
+        let x = 42;
+        info!("[test] formatted value: x={}", x);
+
+        // 检查日志目录和文件已创建
+        let log_dir = "log";
+        assert!(fs::metadata(log_dir).is_ok(), "log directory should exist");
+
+        // 查找今天日期的子目录
+        let today = chrono::Local::now().format("%Y/%m/%d").to_string();
+        let daily_dir = format!("log/{}", today);
+        assert!(
+            fs::metadata(&daily_dir).is_ok(),
+            "daily log directory '{}' should exist",
+            daily_dir
+        );
+
+        // 检查目录中有日志文件
+        let entries: Vec<_> = fs::read_dir(&daily_dir)
+            .expect("should read daily dir")
+            .filter_map(|e| e.ok())
+            .collect();
+        assert!(
+            !entries.is_empty(),
+            "daily log directory should contain at least one log file"
+        );
+
+        // drop guard — 不应该 panic
+        drop(guard);
+    }
 }

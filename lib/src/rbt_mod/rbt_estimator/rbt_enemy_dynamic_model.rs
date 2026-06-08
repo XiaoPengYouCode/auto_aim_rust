@@ -411,13 +411,13 @@ pub fn handle_switch(current_yaw: f64, enemy_layout: &EnemyArmorLayout) -> f64 {
         EnemyArmorLayout::Symmetric4(_) => {
             // 标准4块装甲板布局，间隔90度
             let next_yaw = (current_yaw + 90.0) % 360.0;
-            tracing::info!("Switching armor: {:.1}° -> {:.1}°", current_yaw, next_yaw);
+            log::info!("Switching armor: {:.1}° -> {:.1}°", current_yaw, next_yaw);
             next_yaw
         }
         EnemyArmorLayout::Tripod3(_) => {
             // 前哨站3块装甲板布局，间隔120度
             let next_yaw = (current_yaw + 120.0) % 360.0;
-            tracing::info!("Switching outpost armor: {:.1}° -> {:.1}°", current_yaw, next_yaw);
+            log::info!("Switching outpost armor: {:.1}° -> {:.1}°", current_yaw, next_yaw);
             next_yaw
         }
     }

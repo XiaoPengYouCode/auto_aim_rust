@@ -97,7 +97,7 @@ where
             model.inject_error(nominal_state, &self.error_estimate, strategy);
             self.error_estimate.fill(na::convert(0.0));
         } else {
-            tracing::error!("Failed to solve s inverse")
+            log::error!("Failed to solve s inverse")
         }
     }
 

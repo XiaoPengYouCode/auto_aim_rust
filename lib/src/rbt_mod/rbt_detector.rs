@@ -7,7 +7,7 @@ use ort::{
 };
 use std::cmp::PartialEq;
 use std::collections::HashMap;
-use tracing::{error, info};
+use log::{error, info};
 
 use crate::rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};

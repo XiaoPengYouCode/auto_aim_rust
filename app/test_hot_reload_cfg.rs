@@ -6,7 +6,7 @@ use auto_aim_rust::rbt_infra::rbt_log::logger_init;
 #[tokio::main]
 async fn main() -> RbtResult<()> { 
     let cfg = RbtCfg::from_toml().unwrap_or_default();
-    let _logger_guard = logger_init().await?;
+    let _logger_guard = logger_init()?;
 
     let (boardcast_tx, boardcast_rx) = tokio::sync::broadcast::channel::<()>(1);
     let (cfg_watch_tx, cfg_watch_rx) = tokio::sync::watch::channel(cfg.clone());

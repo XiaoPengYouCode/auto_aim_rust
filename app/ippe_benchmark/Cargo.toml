@@ -8,5 +8,5 @@ license.workspace = true
 [dependencies]
 lib = { path = "../../lib" }
 nalgebra = {workspace = true}
-tracing = {workspace = true}
 rerun = {workspace = true}
+log = {workspace = true}

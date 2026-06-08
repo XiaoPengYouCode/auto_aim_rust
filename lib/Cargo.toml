@@ -14,9 +14,10 @@ ort = { workspace = true }
 thiserror = { workspace = true }
 
 # logger
-tracing-subscriber = { workspace = true }
-tracing = { workspace = true }
-tracing-appender = { workspace = true }
+log = { workspace = true }
+logforth = { workspace = true }
+logforth-append-file = { workspace = true }
+logforth-append-async = { workspace = true }
 rerun = { workspace = true }
 
 # cfg
