@@ -1,6 +1,7 @@
 use log::{error, info, warn};
 use ort::inputs;
 use ort::value::TensorRef;
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -10,6 +11,7 @@ use tokio::task::JoinHandle;
 use lib::rbt_mod::rbt_solver::RbtSolvedResults;
 use lib::{
     rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2,
+    rbt_infra::rbt_cfg::RbtCfg,
     rbt_infra::{
         rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING},
         rbt_queue_async::RbtSPSCQueueAsync,
@@ -22,6 +24,8 @@ use lib::{
             rbt_yolo::{YOLO_LABEL_TABLE, letterbox, nms},
         },
         rbt_estimator::RbtHandlerPoll,
+        rbt_estimator::rbt_enemy_dynamic_model::EnemyId,
+        rbt_solver::enemys_solver,
     },
 };
 
@@ -132,14 +136,22 @@ pub fn infer(
 }
 
 /// 后处理阶段：接收推理结果，执行目标检测框处理，并提取装甲板信息
-pub fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
+pub fn post_process(
+    frame: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+    solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
+    cfg: RbtCfg,
+    rec: rr::RecordingStream,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
             if !IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
                 info!("post_process: Stopping processing as IS_RUNNING is false");
                 break;
             }
-            let detector_cfg = GENERIC_RBT_CFG.read().unwrap().detector_cfg.clone();
+            let detector_cfg = cfg.detector_cfg.clone();
+            let game_cfg = cfg.game_cfg.clone();
+            let cam_k = cfg.cam_cfg.cam_k();
+            let rec = rec.clone();
             if let Some(mut frame) = frame.pop().await {
                 let time_used = frame.time_used(); // 获取处理时间
                 info!(
@@ -192,7 +204,8 @@ pub fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
 
                     let mut id = 0usize;
                     // 收集装甲板信息
-                    let mut armors = Vec::<DetectedArmor>::with_capacity(result.len());
+                    let mut armors =
+                        HashMap::<EnemyId, Vec<DetectedArmor>>::with_capacity(result.len());
                     for (_, class_id, _, idx) in result {
                         //     let armor = ArmorKeyPoints::new(
                         //         ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]), // 中心点坐标
@@ -203,17 +216,10 @@ pub fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
                         //     );
                         //     armors.push(armor); // 添加到装甲板列表
                         let armor_label = &YOLO_LABEL_TABLE[class_id];
-                        if armor_label.color()
-                            == &GENERIC_RBT_CFG
-                                .read()
-                                .unwrap()
-                                .game_cfg
-                                .self_fraction()
-                                .unwrap()
-                        {
+                        if armor_label.color() == &game_cfg.self_fraction().unwrap() {
                             continue;
                         }
-                        // let armor_id = armor_label.id().clone();
+                        let armor_id = *armor_label.id();
 
                         let armor = DetectedArmor::new(
                             RbtImgPoint2::new_screen_pixel(output[[idx, 0]], output[[idx, 1]]),
@@ -225,25 +231,23 @@ pub fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
                         );
 
                         id += 1;
-                        armors.push(armor);
+                        armors.entry(armor_id).or_default().push(armor);
                     }
 
-                    (frame, armors) // 返回装甲板信息
+                    let solved_enemies = enemys_solver(armors, &cam_k, &rec)?;
+                    Ok::<_, lib::rbt_infra::rbt_err::RbtError>((frame, solved_enemies))
                 })
                 .await;
 
-                if let Ok((_frame, _armors)) = result {
-                    // 处理装甲板信息
-                    // for armor in armors {
-                    //     info!("Detected armor: {:?}", armor);
-                    // }
-                    // 将处理后的帧发送到下一阶段或存储
-                    // 这里可以添加代码将处理后的帧存储或发送到其他组件
+                if let Ok(Ok((_frame, solved_enemies))) = result {
+                    solved_queue.force_push(solved_enemies);
                     let time_used = _frame.time_used(); // 获取处理时间
                     info!(
                         "post_process: Frame ID {} processed successfully, time used: {:?}",
                         id, time_used
                     );
+                } else if let Ok(Err(err)) = result {
+                    warn!("post_process: Failed to solve frame ID {}: {}", id, err);
                 } else {
                     warn!("post_process: Failed to process frame ID: {}", id);
                 }
@@ -256,14 +260,19 @@ pub fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
 }
 
 /// 500Hz 频率通讯
-pub async fn estimate_process() -> JoinHandle<()> {
+pub fn estimate_process(solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(2));
+        let mut estimator_poll = RbtHandlerPoll::new();
         loop {
             ticker.tick().await;
-            let enemys = RbtSolvedResults::default();
-            let mut estimator_poll = RbtHandlerPoll::new();
-            estimator_poll.update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys)
+            if !IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) && solved_queue.is_empty() {
+                info!("estimate_process: Stopping processing as IS_RUNNING is false");
+                break;
+            }
+
+            let enemys = solved_queue.try_pop().unwrap_or_default();
+            estimator_poll.update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys);
         }
     })
 }

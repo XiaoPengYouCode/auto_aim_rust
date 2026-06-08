@@ -5,8 +5,7 @@ use lib::rbt_infra::rbt_cfg::RbtCfg;
 use lib::rbt_infra::rbt_err::RbtResult;
 use lib::rbt_infra::rbt_log::{RbtLoggerGuard, logger_init};
 use lib::rbt_mod::rbt_detector::pipeline;
-use lib::rbt_mod::rbt_estimator::RbtEstimator;
-use lib::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
+use lib::rbt_mod::rbt_estimator::RbtHandlerPoll;
 use lib::rbt_mod::rbt_solver::enemys_solver;
 use std::path::Path;
 
@@ -42,6 +41,7 @@ async fn auto_aim_init() -> RbtResult<AutoAimHandle> {
 async fn main() -> RbtResult<()> {
     // 0. 初始化
     let auto_aim_handle = auto_aim_init().await?;
+    let mut estimator_poll = RbtHandlerPoll::new();
 
     loop {
         // 1. 执行 detector，使用神经网络模型，寻找所有的装甲板
@@ -54,14 +54,6 @@ async fn main() -> RbtResult<()> {
         let enemys = enemys_solver(detector_result, &cam_k, &auto_aim_handle.rec)?;
 
         // 3. 执行 estimator
-        // 创建对 3 号步兵的估计器
-        let mut estimator = RbtEstimator::new(EnemyId::Infantry3);
-        // 从全部解算结果中获取 3 号步兵的解算结果
-        let target_enemy_solved_result = enemys.get(&estimator.enemy_id).unwrap();
-        // 基于解算结果，更新估计器
-        estimator.update(
-            &auto_aim_handle.cfg.estimator_cfg,
-            target_enemy_solved_result,
-        );
+        estimator_poll.update(&auto_aim_handle.cfg.estimator_cfg, enemys);
     }
 }

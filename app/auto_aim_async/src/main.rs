@@ -1,16 +1,18 @@
 extern crate ndarray as nd;
 extern crate rerun as rr;
 
-use crate::rbt_threads::{infer, post_process, pre_process};
+use crate::rbt_threads::{estimate_process, infer, post_process, pre_process};
 use auto_aim_rust::rbt_infra::rbt_log;
 use lib as auto_aim_rust;
 use lib::rbt_infra::rbt_err::RbtResult;
 use lib::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
 use lib::rbt_mod::rbt_detector::rbt_frame::RbtFrame;
+use lib::rbt_mod::rbt_solver::RbtSolvedResults;
 use log::info;
 use ort::execution_providers;
 use ort::session::Session;
+use std::path::Path;
 use std::sync::Arc;
 
 pub mod rbt_threads;
@@ -20,10 +22,16 @@ async fn main() -> RbtResult<()> {
     // init logger
     let _logger_guard = rbt_log::logger_init()?;
     // init rerun logger
-    // let rec = rr::RecordingStreamBuilder::new("rbt_async").save("test.rrd")?;
+    let rerun_path = Path::new("rerun-log").join("rbt_async.rrd");
+    if let Some(parent) = rerun_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let rec = rr::RecordingStreamBuilder::new("rbt_async").save(rerun_path)?;
 
     let pre_infer_queue = Arc::new(RbtSPSCQueueAsync::<RbtFrame>::new(1));
     let infer_post_queue = Arc::new(RbtSPSCQueueAsync::<RbtFrame>::new(1));
+    let solved_queue = Arc::new(RbtSPSCQueueAsync::<RbtSolvedResults>::new(1));
+    let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
 
     // build orrtruntime session
     let session = Session::builder()?
@@ -45,10 +53,16 @@ async fn main() -> RbtResult<()> {
     // let session = Arc::new(Mutex::new(session));
     let pre_task_handler = pre_process(pre_infer_queue.clone());
     let infer_task_handler = infer(pre_infer_queue, session, infer_post_queue.clone());
-    let post_task_handler = post_process(infer_post_queue);
+    let post_task_handler = post_process(infer_post_queue, solved_queue.clone(), cfg, rec);
+    let estimate_task_handler = estimate_process(solved_queue);
 
     let tim = std::time::Instant::now();
-    let (_, _, _) = tokio::join!(pre_task_handler, infer_task_handler, post_task_handler);
+    let (_, _, _, _) = tokio::join!(
+        pre_task_handler,
+        infer_task_handler,
+        post_task_handler,
+        estimate_task_handler
+    );
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // wait for post process to finish
     info!("multi_thread_pipeline finished in {:?}", tim.elapsed());
 
