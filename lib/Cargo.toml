@@ -28,7 +28,7 @@ serde = { workspace = true }
 # framework
 tokio = { workspace = true }
 tokio-serial = { workspace = true }
-chrono = { workspace = true }
+jiff = { workspace = true }
 notify = { workspace = true }
 crossbeam-queue = { workspace = true }
 strum = { workspace = true}

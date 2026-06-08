@@ -3,6 +3,7 @@ use std::{
     sync::Arc,
 };
 
+use jiff::Zoned;
 use log::info;
 use logforth::append;
 use logforth::bridge::log::LogBridge;
@@ -32,12 +33,12 @@ fn workspace_root() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
 }
 
-fn daily_log_dir(now: chrono::DateTime<chrono::Local>) -> PathBuf {
+fn daily_log_dir(now: &Zoned) -> PathBuf {
     workspace_root()
         .join("log")
-        .join(now.format("%Y").to_string())
-        .join(now.format("%m").to_string())
-        .join(now.format("%d").to_string())
+        .join(format!("{:04}", now.year()))
+        .join(format!("{:02}", now.month()))
+        .join(format!("{:02}", now.day()))
 }
 
 /// 初始化日志系统
@@ -67,9 +68,9 @@ pub fn logger_init() -> RbtResult<Option<RbtLoggerGuard>> {
         let file_filter: RustLogFilter = logger_cfg.file_log_filter.as_str().into();
 
         // 使用当前时间生成日志目录和文件名（兼容原有目录结构）
-        let now = chrono::Local::now();
-        let file_name = format!("{}", now.format("%H:%M:%S"));
-        let directory_name = daily_log_dir(now);
+        let now = Zoned::now();
+        let file_name = format!("{:02}:{:02}:{:02}", now.hour(), now.minute(), now.second());
+        let directory_name = daily_log_dir(&now);
         std::fs::create_dir_all(&directory_name)
             .map_err(|e| RbtError::LoggerInitError(e.to_string()))?;
 
@@ -144,7 +145,7 @@ mod tests {
         assert!(fs::metadata(log_dir).is_ok(), "log directory should exist");
 
         // 查找今天日期的子目录
-        let daily_dir = daily_log_dir(chrono::Local::now());
+        let daily_dir = daily_log_dir(&Zoned::now());
         assert!(
             fs::metadata(&daily_dir).is_ok(),
             "daily log directory '{}' should exist",
