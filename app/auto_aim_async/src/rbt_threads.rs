@@ -57,7 +57,7 @@ pub fn pre_process(queue: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
                     id,
                     frame.time_used()
                 );
-                let _ = queue.force_push(frame);
+                queue.force_push(frame);
                 if id == 1000 {
                     IS_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
                     info!(
@@ -82,7 +82,7 @@ pub fn infer(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            if IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) == false {
+            if !IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
                 info!("infer: Stopping processing as IS_RUNNING is false");
                 break;
             }
@@ -120,7 +120,7 @@ pub fn infer(
 
                 // 处理推理结果
                 if let Ok((session_return, output)) = output_result {
-                    let _ = infer_post_queue.force_push(output); // 将推理结果发送到后处理阶段
+                    infer_post_queue.force_push(output); // 将推理结果发送到后处理阶段
                     session = session_return; // 确保会话在闭包外部可用
                 } else {
                     warn!("infer: Failed to process frame ID: {}", id);
@@ -135,7 +135,7 @@ pub fn infer(
 pub fn post_process(frame: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            if IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) == false {
+            if !IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
                 info!("post_process: Stopping processing as IS_RUNNING is false");
                 break;
             }
@@ -263,9 +263,7 @@ pub async fn estimate_process() -> JoinHandle<()> {
             ticker.tick().await;
             let enemys = RbtSolvedResults::default();
             let mut estimator_poll = RbtHandlerPoll::new();
-            estimator_poll
-                .update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys)
-                .await;
+            estimator_poll.update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys)
         }
     })
 }

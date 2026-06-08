@@ -61,10 +61,8 @@ impl From<RbtPoint3> for na::Point3<f64> {
 
 fn point_tansfer(
     point: &na::Point3<f64>,
-    source_coord_sys: &RbtPoint3CoordSys,
-    target_coord_sys: &RbtPoint3CoordSys,
+    _source_coord_sys: &RbtPoint3CoordSys,
+    _target_coord_sys: &RbtPoint3CoordSys,
 ) -> na::Point3<f64> {
-    match (source_coord_sys, target_coord_sys) {
-        (_, _) => na::Point3::new(point.x, point.y, point.z),
-    }
+    na::Point3::new(point.x, point.y, point.z)
 }

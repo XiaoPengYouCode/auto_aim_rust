@@ -28,7 +28,7 @@ async fn main() {
         }
     });
 
-    tokio::join!(sens_handle, ctrl_handle,);
+    let _ = tokio::join!(sens_handle, ctrl_handle);
 
     info!("main task exiting");
 }

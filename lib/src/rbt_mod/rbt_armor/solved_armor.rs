@@ -10,7 +10,7 @@ pub struct SolvedArmor {
     detected_armor: DetectedArmor,
     pose: RbtPose3, // 从 pnp 中得到
     pub enemy_yaw: f64,
-    base_yaw: f64,
+    _base_yaw: f64,
     radius: f64,
 }
 
@@ -27,7 +27,7 @@ impl SolvedArmor {
             detected_armor,
             pose: RbtPose3::new(pose, RbtPoseCoordSys::Camera),
             enemy_yaw,
-            base_yaw,
+            _base_yaw: base_yaw,
             radius,
         }
     }

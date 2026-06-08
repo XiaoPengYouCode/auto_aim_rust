@@ -15,16 +15,6 @@ pub type ArmorId = EnemyId;
 // pub struct ArmorLabel(ArmorColor, ArmorId);
 pub type ArmorLabel = YoloLabel;
 
-impl ArmorLabel {
-    fn armor_type(&self) -> ArmorType {
-        if self.id() == &ArmorId::Hero1 {
-            ArmorType::Large
-        } else {
-            ArmorType::Small
-        }
-    }
-}
-
 pub type ArmorColor = EnemyFaction;
 
 /// ArmorType 是根据 ID 判断的，所以不放在 Label 里面
