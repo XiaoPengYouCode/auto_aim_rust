@@ -1,4 +1,7 @@
-use std::sync::Arc;
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 
 use log::info;
 use logforth::append;
@@ -20,6 +23,21 @@ impl Drop for RbtLoggerGuard {
     fn drop(&mut self) {
         self.logger.flush();
     }
+}
+
+fn workspace_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+}
+
+fn daily_log_dir(now: chrono::DateTime<chrono::Local>) -> PathBuf {
+    workspace_root()
+        .join("log")
+        .join(now.format("%Y").to_string())
+        .join(now.format("%m").to_string())
+        .join(now.format("%d").to_string())
 }
 
 /// 初始化日志系统
@@ -51,7 +69,7 @@ pub fn logger_init() -> RbtResult<Option<RbtLoggerGuard>> {
         // 使用当前时间生成日志目录和文件名（兼容原有目录结构）
         let now = chrono::Local::now();
         let file_name = format!("{}", now.format("%H:%M:%S"));
-        let directory_name = format!("log/{}", now.format("%Y/%m/%d"));
+        let directory_name = daily_log_dir(now);
         std::fs::create_dir_all(&directory_name)
             .map_err(|e| RbtError::LoggerInitError(e.to_string()))?;
 
@@ -122,16 +140,15 @@ mod tests {
         info!("[test] formatted value: x={}", x);
 
         // 检查日志目录和文件已创建
-        let log_dir = "log";
+        let log_dir = workspace_root().join("log");
         assert!(fs::metadata(log_dir).is_ok(), "log directory should exist");
 
         // 查找今天日期的子目录
-        let today = chrono::Local::now().format("%Y/%m/%d").to_string();
-        let daily_dir = format!("log/{}", today);
+        let daily_dir = daily_log_dir(chrono::Local::now());
         assert!(
             fs::metadata(&daily_dir).is_ok(),
             "daily log directory '{}' should exist",
-            daily_dir
+            daily_dir.display()
         );
 
         // 检查目录中有日志文件
