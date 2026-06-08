@@ -52,6 +52,13 @@ impl<T> RbtSPSCQueueAsync<T> {
         self.queue.pop()
     }
 
+    /// 非阻塞弹出队列中的元素。
+    ///
+    /// 适用于固定频率消费者：本轮没有新数据时，由调用方决定是否使用默认输入推进状态机。
+    pub fn try_pop(&self) -> Option<T> {
+        self.queue.pop()
+    }
+
     /// 检查当前队列元素的长度
     ///
     /// # 返回值
