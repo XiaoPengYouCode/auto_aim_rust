@@ -10,7 +10,7 @@ use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
 use lib::rbt_mod::rbt_detector::rbt_frame::RbtFrame;
 use lib::rbt_mod::rbt_solver::RbtSolvedResults;
 use log::info;
-use ort::execution_providers;
+use ort::ep;
 use ort::session::Session;
 use std::path::Path;
 use std::sync::Arc;
@@ -35,7 +35,7 @@ async fn main() -> RbtResult<()> {
 
     // build orrtruntime session
     let session = Session::builder()?
-        .with_execution_providers([execution_providers::OpenVINOExecutionProvider::default()
+        .with_execution_providers([ep::OpenVINOExecutionProvider::default()
             .with_device_type("GPU")
             .build()
             .error_on_failure()])?

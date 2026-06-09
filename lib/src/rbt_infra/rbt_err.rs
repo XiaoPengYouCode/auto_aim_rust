@@ -14,7 +14,7 @@ pub enum RbtError {
 
     // AI/模型相关错误
     #[error("Ort error: {0}")]
-    OrtError(#[from] ort::error::Error),
+    OrtError(#[from] ort::Error),
 
     // 配置相关错误
     #[error("Toml parse error: {0}")]
@@ -73,6 +73,12 @@ pub type RbtResult<T> = Result<T, RbtError>;
 impl From<String> for RbtError {
     fn from(err: String) -> Self {
         RbtError::StringError(err)
+    }
+}
+
+impl From<ort::Error<ort::session::builder::SessionBuilder>> for RbtError {
+    fn from(err: ort::Error<ort::session::builder::SessionBuilder>) -> Self {
+        RbtError::OrtError(err.into())
     }
 }
 

@@ -2,7 +2,7 @@ use image::{DynamicImage, GenericImageView, ImageReader};
 use log::{error, info};
 use ndarray as nd;
 use ort::{
-    execution_providers, inputs,
+    ep, inputs,
     session::{Session, SessionOutputs},
     value::TensorRef,
 };
@@ -163,21 +163,17 @@ pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<HashMap<EnemyId, Vec<De
     // build session
     let session_builder = Session::builder()?;
     let mut session = if cfg.ort_ep == "TensorRT" {
-        session_builder.with_execution_providers([
-            execution_providers::TensorRTExecutionProvider::default()
-                .with_engine_cache(true)
-                .with_engine_cache_path(cfg.armor_detect_engine_path.as_str())
-                .with_fp16(true)
-                .build()
-                .error_on_failure(),
-        ])?
+        session_builder.with_execution_providers([ep::TensorRTExecutionProvider::default()
+            .with_engine_cache(true)
+            .with_engine_cache_path(cfg.armor_detect_engine_path.as_str())
+            .with_fp16(true)
+            .build()
+            .error_on_failure()])?
     } else if cfg.ort_ep == "OpenVINO" {
-        session_builder.with_execution_providers([
-            execution_providers::OpenVINOExecutionProvider::default()
-                .with_device_type("GPU")
-                .build()
-                .error_on_failure(),
-        ])?
+        session_builder.with_execution_providers([ep::OpenVINOExecutionProvider::default()
+            .with_device_type("GPU")
+            .build()
+            .error_on_failure()])?
     } else {
         error!("Unsupported execution provider: {}", cfg.ort_ep);
         return Err(RbtError::UnsupportedExecutionProvider(cfg.ort_ep.clone()));
