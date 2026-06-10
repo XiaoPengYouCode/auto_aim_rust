@@ -8,7 +8,12 @@ use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_comm::rbt_comm_frame::{AimingState, CtrlData, ShotBuffMode, ShotMode};
 
 pub mod fire_gate;
+pub mod second_order_position_mpc;
 pub use fire_gate::{FireGateConfig, ImpactAngleCheck, ShotSlotGate, ShotSlotGateResult};
+pub use second_order_position_mpc::{
+    SECOND_ORDER_POSITION_MPC_HORIZON, SecondOrderPositionMpc, SecondOrderPositionMpcConfig,
+    SecondOrderPositionMpcOutput,
+};
 
 const MM_PER_M: f64 = 1_000.0;
 const EPSILON_MM: f64 = 1e-6;
