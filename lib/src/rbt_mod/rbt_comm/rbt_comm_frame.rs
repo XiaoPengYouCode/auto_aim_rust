@@ -238,8 +238,8 @@ impl SensData {
         write_i16_le(&mut tail[0..2], encode_i16_x100(self.gimbal_pitch));
         write_i16_le(&mut tail[2..4], encode_i16_x100(self.yaw_speed));
         tail[4] = u8::from(self.mcu_fire_permit);
-        tail[5] = self.raw_task_mode;
-        tail[6] = self.mapped_task_mode.into();
+        tail[5] = 0;
+        tail[6] = 0;
         tail[7] = CAN_FRAME_EOF;
         Ok(())
     }
@@ -562,6 +562,8 @@ mod tests {
         assert_eq!(read_i16_le(&payload[8..10]), 789);
         assert_eq!(read_i16_le(&payload[10..12]), -1000);
         assert_eq!(payload[12], 1);
+        assert_eq!(payload[13], 0);
+        assert_eq!(payload[14], 0);
         assert_eq!(payload[15], CAN_FRAME_EOF);
     }
 
