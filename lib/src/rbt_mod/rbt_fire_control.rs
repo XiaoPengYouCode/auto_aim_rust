@@ -7,6 +7,9 @@ use crate::rbt_base::rbt_algorithm::rbt_antigravity::solve_ballistic_trajectory;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_comm::rbt_comm_frame::{AimingState, CtrlData, ShotBuffMode, ShotMode};
 
+pub mod fire_gate;
+pub use fire_gate::{FireGateConfig, ImpactAngleCheck, ShotSlotGate, ShotSlotGateResult};
+
 const MM_PER_M: f64 = 1_000.0;
 const EPSILON_MM: f64 = 1e-6;
 
@@ -23,6 +26,7 @@ pub struct FireControl {
     yaw_bias_deg: f64,
     pitch_bias_deg: f64,
     gravity_compensation: bool,
+    fire_gate_config: FireGateConfig,
 }
 
 impl FireControl {
@@ -32,6 +36,7 @@ impl FireControl {
             yaw_bias_deg: 0.0,
             pitch_bias_deg: 0.0,
             gravity_compensation: true,
+            fire_gate_config: FireGateConfig::default(),
         }
     }
 
@@ -48,6 +53,15 @@ impl FireControl {
     pub fn with_gravity_compensation(mut self, enabled: bool) -> Self {
         self.gravity_compensation = enabled;
         self
+    }
+
+    pub fn with_fire_gate_config(mut self, fire_gate_config: FireGateConfig) -> Self {
+        self.fire_gate_config = fire_gate_config;
+        self
+    }
+
+    pub fn fire_gate_config(&self) -> FireGateConfig {
+        self.fire_gate_config
     }
 
     /// 根据 base 坐标系目标点计算云台指令。
@@ -167,5 +181,16 @@ mod tests {
 
         assert_eq!(ctrl.shot_mode, ShotMode::DoNothing);
         assert_eq!(ctrl.aiming_state, AimingState::AimingNoTarget);
+    }
+
+    #[test]
+    fn fire_gate_config_is_attached_to_fire_control() {
+        let cfg = FireGateConfig {
+            yaw_tolerance_max_deg: 2.0,
+            ..Default::default()
+        };
+        let fire_control = FireControl::new(24.0).with_fire_gate_config(cfg);
+
+        assert_eq!(fire_control.fire_gate_config(), cfg);
     }
 }
