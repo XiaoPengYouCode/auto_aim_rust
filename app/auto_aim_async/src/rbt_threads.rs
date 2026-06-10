@@ -61,7 +61,7 @@ pub fn pre_process(queue: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
                     id,
                     frame.time_used()
                 );
-                queue.force_push(frame);
+                queue.push_latest(frame);
                 if id == 1000 {
                     IS_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
                     info!(
@@ -90,7 +90,7 @@ pub fn infer(
                 info!("infer: Stopping processing as IS_RUNNING is false");
                 break;
             }
-            if let Some(mut frame) = pre_infer_queue.pop().await {
+            if let Some(mut frame) = pre_infer_queue.pop_latest().await {
                 info!(
                     "infer: Frame ID {} received form processing, time used: {:?}",
                     frame.id(),
@@ -124,7 +124,7 @@ pub fn infer(
 
                 // 处理推理结果
                 if let Ok((session_return, output)) = output_result {
-                    infer_post_queue.force_push(output); // 将推理结果发送到后处理阶段
+                    infer_post_queue.push_latest(output); // 将最新推理结果发送到后处理阶段
                     session = session_return; // 确保会话在闭包外部可用
                 } else {
                     warn!("infer: Failed to process frame ID: {}", id);
@@ -152,7 +152,7 @@ pub fn post_process(
             let game_cfg = cfg.game_cfg.clone();
             let cam_k = cfg.cam_cfg.cam_k();
             let rec = rec.clone();
-            if let Some(mut frame) = frame.pop().await {
+            if let Some(mut frame) = frame.pop_latest().await {
                 let time_used = frame.time_used(); // 获取处理时间
                 info!(
                     "post_process: Frame ID {} received in {:?}",
@@ -240,7 +240,7 @@ pub fn post_process(
                 .await;
 
                 if let Ok(Ok((_frame, solved_enemies))) = result {
-                    solved_queue.force_push(solved_enemies);
+                    solved_queue.push_latest(solved_enemies);
                     let time_used = _frame.time_used(); // 获取处理时间
                     info!(
                         "post_process: Frame ID {} processed successfully, time used: {:?}",
@@ -271,7 +271,7 @@ pub fn estimate_process(solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>) 
                 break;
             }
 
-            let enemys = solved_queue.try_pop().unwrap_or_default();
+            let enemys = solved_queue.try_pop_latest().unwrap_or_default();
             estimator_poll.update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys);
         }
     })
