@@ -25,6 +25,45 @@ pub mod rbt_enemy_dynamic_model;
 mod rbt_enemy_select;
 pub mod rbt_ypd_angle_tracker;
 
+/// Snapshot exported by the estimator for the fire-control planner.
+///
+/// Units are intentionally aligned with `vivsionn::Target`: meters and radians.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EnemyTrackSnapshot {
+    pub enemy_id: EnemyId,
+    pub armor_count: usize,
+    pub center_xy_m: na::Point2<f64>,
+    pub center_velocity_xy_mps: na::Vector2<f64>,
+    pub armor_z_m: f64,
+    pub armor_z_velocity_mps: f64,
+    pub body_yaw_rad: f64,
+    pub body_yaw_rate_rad_s: f64,
+    pub primary_radius_m: f64,
+    pub secondary_radius_delta_m: f64,
+    pub height_delta_m: f64,
+    pub state_age_s: f64,
+    pub track_valid: bool,
+    pub fire_permit: bool,
+}
+
+impl EnemyTrackSnapshot {
+    pub fn planner_state(&self) -> [f64; 11] {
+        [
+            self.center_xy_m.x,
+            self.center_velocity_xy_mps.x,
+            self.center_xy_m.y,
+            self.center_velocity_xy_mps.y,
+            self.armor_z_m,
+            self.armor_z_velocity_mps,
+            self.body_yaw_rad,
+            self.body_yaw_rate_rad_s,
+            self.primary_radius_m,
+            self.secondary_radius_delta_m,
+            self.height_delta_m,
+        ]
+    }
+}
+
 pub mod rbt_estimator_state {
     use crate::rbt_infra::rbt_cfg::EstimatorCfg;
 
@@ -127,20 +166,6 @@ pub struct RbtEstimator {
     pub single_or_double: bool, // 当前帧是否有多装甲板观测
 }
 
-/// Latest target point for the fire-control loop.
-///
-/// The point is expressed in base coordinates, in millimeters, and is intended
-/// to be consumed as a latest-value snapshot. It deliberately contains no
-/// control-loop state; the gimbal feedback loop owns convergence.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct RbtTargetSnapshot {
-    pub enemy_id: EnemyId,
-    pub target_base_mm: na::Point3<f64>,
-    pub distance_mm: f64,
-    pub yaw_deg: f64,
-    pub fire_permit: bool,
-}
-
 impl RbtEstimator {
     pub fn new(enemy_id: EnemyId) -> Self {
         Self {
@@ -169,6 +194,38 @@ impl RbtEstimator {
 
         self.update_global_vars(solved_enemy);
         self.update_tracker(solved_enemy.as_ref(), dt_s);
+    }
+
+    pub fn snapshot(&self) -> Option<EnemyTrackSnapshot> {
+        if matches!(
+            self.state,
+            EstimatorStateMachine::Init | EstimatorStateMachine::Sleep
+        ) {
+            return None;
+        }
+        let tracker_snapshot = self.tracker_snapshot()?;
+        let state = tracker_snapshot.state11d;
+        let state_age_s = match self.state {
+            EstimatorStateMachine::Lost { time_stamp } => time_stamp.elapsed().as_secs_f64(),
+            _ => 0.0,
+        };
+
+        Some(EnemyTrackSnapshot {
+            enemy_id: self.enemy_id,
+            armor_count: tracker_snapshot.armor_num,
+            center_xy_m: na::Point2::new(state[0] * 0.001, state[2] * 0.001),
+            center_velocity_xy_mps: na::Vector2::new(state[1] * 0.001, state[3] * 0.001),
+            armor_z_m: state[4] * 0.001,
+            armor_z_velocity_mps: state[5] * 0.001,
+            body_yaw_rad: state[6],
+            body_yaw_rate_rad_s: state[7],
+            primary_radius_m: state[8] * 0.001,
+            secondary_radius_delta_m: state[9] * 0.001,
+            height_delta_m: state[10] * 0.001,
+            state_age_s,
+            track_valid: !tracker_snapshot.diverged,
+            fire_permit: self.fire,
+        })
     }
 
     fn update_global_vars(&mut self, solved_enemy: &Option<RbtSolvedResult>) {
@@ -346,29 +403,9 @@ impl RbtHandlerPoll {
         self.enemy_selector.selected_enemy_id()
     }
 
-    pub fn selected_target_snapshot(&self) -> Option<RbtTargetSnapshot> {
+    pub fn selected_snapshot(&self) -> Option<EnemyTrackSnapshot> {
         let enemy_id = self.selected_enemy_id()?;
-        let estimator = self.estimators.get(&enemy_id)?;
-        let snapshot = estimator.tracker_snapshot()?;
-        let tracked_armor = snapshot.tracked_armor_xyza;
-        let target_base_mm = na::Point3::new(tracked_armor[0], tracked_armor[1], tracked_armor[2]);
-
-        if !target_base_mm.coords.iter().all(|value| value.is_finite()) {
-            return None;
-        }
-
-        let distance_mm = target_base_mm.x.hypot(target_base_mm.y);
-        if distance_mm <= 1e-6 {
-            return None;
-        }
-
-        Some(RbtTargetSnapshot {
-            enemy_id,
-            target_base_mm,
-            distance_mm,
-            yaw_deg: target_base_mm.y.atan2(target_base_mm.x).to_degrees(),
-            fire_permit: estimator.fire,
-        })
+        self.estimators.get(&enemy_id)?.snapshot()
     }
 }
 
@@ -484,5 +521,35 @@ enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
                 .tracker_snapshot()
                 .is_none()
         );
+    }
+
+    #[test]
+    fn selected_snapshot_exports_selected_enemy_in_planner_units() {
+        let cfg = estimator_cfg(1_000);
+        let mut handler_poll = RbtHandlerPoll::new();
+
+        handler_poll.update(&cfg, frame(&[(EnemyId::Hero1, (320.0, 192.0))]));
+        handler_poll.update(&cfg, frame(&[(EnemyId::Hero1, (320.0, 192.0))]));
+
+        let snapshot = handler_poll.selected_snapshot().unwrap();
+        assert_eq!(snapshot.enemy_id, EnemyId::Hero1);
+        assert_eq!(snapshot.armor_count, 4);
+        assert!(snapshot.track_valid);
+        assert!(snapshot.fire_permit);
+        assert!((snapshot.center_xy_m.x - 0.2).abs() < 1e-9);
+        assert!(snapshot.center_xy_m.y.abs() < 1e-9);
+        assert!(snapshot.body_yaw_rad.abs() < 1e-9);
+        assert!((snapshot.primary_radius_m - 0.2).abs() < 1e-9);
+        assert_eq!(snapshot.planner_state()[0], snapshot.center_xy_m.x);
+    }
+
+    #[test]
+    fn selected_snapshot_is_none_without_target() {
+        let cfg = estimator_cfg(1_000);
+        let mut handler_poll = RbtHandlerPoll::new();
+
+        handler_poll.update(&cfg, RbtSolvedResults::default());
+
+        assert!(handler_poll.selected_snapshot().is_none());
     }
 }

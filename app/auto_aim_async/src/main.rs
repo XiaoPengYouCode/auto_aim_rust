@@ -2,7 +2,7 @@ extern crate ndarray as nd;
 extern crate rerun as rr;
 
 use crate::rbt_threads::{
-    FireControlSnapshot, control_loop_250hz, estimate_process, infer, post_process, pre_process,
+    PlannerTrackSnapshot, control_loop_250hz, estimate_process, infer, post_process, pre_process,
     static_image_path,
 };
 use auto_aim_rust::rbt_infra::rbt_log;
@@ -46,7 +46,7 @@ async fn main() -> RbtResult<()> {
     let pre_infer_queue = Arc::new(RbtSPSCQueueAsync::<RbtFrame>::new(1));
     let infer_post_queue = Arc::new(RbtSPSCQueueAsync::<RbtFrame>::new(1));
     let solved_queue = Arc::new(RbtSPSCQueueAsync::<RbtSolvedResults>::new(1));
-    let fire_control_queue = Arc::new(RbtSPSCQueueAsync::<FireControlSnapshot>::new(1));
+    let track_queue = Arc::new(RbtSPSCQueueAsync::<PlannerTrackSnapshot>::new(1));
     let feedback_queue = Arc::new(RbtSPSCQueueAsync::<SensData>::new(1));
     let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
 
@@ -87,8 +87,8 @@ async fn main() -> RbtResult<()> {
     let pre_task_handler = pre_process(pre_infer_queue.clone());
     let infer_task_handler = infer(pre_infer_queue, session, infer_post_queue.clone());
     let post_task_handler = post_process(infer_post_queue, solved_queue.clone(), cfg, rec);
-    let estimate_task_handler = estimate_process(solved_queue, fire_control_queue.clone());
-    let control_task_handler = control_loop_250hz(fire_control_queue, feedback_queue);
+    let estimate_task_handler = estimate_process(solved_queue, track_queue.clone());
+    let control_task_handler = control_loop_250hz(track_queue, feedback_queue);
 
     let tim = std::time::Instant::now();
     let (_, _, _, _, _) = tokio::join!(
