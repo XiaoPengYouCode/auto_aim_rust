@@ -32,8 +32,11 @@ use lib::{
             rbt_yolo::{YOLO_LABEL_TABLE, letterbox, nms},
         },
         rbt_estimator::rbt_enemy_dynamic_model::EnemyId,
-        rbt_estimator::{RbtHandlerPoll, RbtTargetSnapshot},
-        rbt_fire_control::{FireControl, SecondOrderPositionMpc, SecondOrderPositionMpcConfig},
+        rbt_estimator::{EnemyTrackSnapshot, RbtHandlerPoll},
+        rbt_fire_control::{
+            FireGateConfig, PlannerTarget, SecondOrderPositionMpc, SecondOrderPositionMpcConfig,
+            ShotSlotGate, YawPlanner,
+        },
         rbt_solver::enemys_solver,
     },
 };
@@ -44,9 +47,9 @@ const CONTROL_STATUS_LOG_PERIOD_TICKS: u64 = 50;
 const PIPELINE_POP_TIMEOUT_MS: u64 = 100;
 
 #[derive(Debug, Clone)]
-pub struct FireControlSnapshot {
+pub struct PlannerTrackSnapshot {
     seq: u64,
-    target: Option<RbtTargetSnapshot>,
+    target: Option<EnemyTrackSnapshot>,
     publish_tp: Instant,
 }
 
@@ -58,7 +61,7 @@ pub fn static_image_path() -> PathBuf {
         .join("test_resize.jpg")
 }
 
-fn fallback_feedback(bullet_speed_mps: f64) -> SensData {
+fn default_feedback(bullet_speed_mps: f64) -> SensData {
     SensData {
         task_mode: TaskMode::AutoShot,
         self_fraction: SelfFraction::Blue,
@@ -85,18 +88,6 @@ fn hold_current_gimbal_control(feedback: SensData) -> CtrlData {
         shot_buff_mode: ShotBuffMode::ShotBuffOff,
         aiming_state: AimingState::AimingNoTarget,
     }
-}
-
-fn normalize_angle_deg(angle_deg: f64) -> f64 {
-    let mut result = (angle_deg + 180.0) % 360.0;
-    if result < 0.0 {
-        result += 360.0;
-    }
-    result - 180.0
-}
-
-fn shortest_angle_delta_deg(target_deg: f64, current_deg: f64) -> f64 {
-    normalize_angle_deg(target_deg - current_deg)
 }
 
 /// 图像预处理阶段：读取图像并通过通道发送到下一阶段。
@@ -343,10 +334,10 @@ pub fn post_process(
     })
 }
 
-/// 500Hz 频率通讯
+/// 500Hz 估计器，将当前选中目标快照送入发控。
 pub fn estimate_process(
     solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
-    fire_control_queue: Arc<RbtSPSCQueueAsync<FireControlSnapshot>>,
+    track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(2));
@@ -362,9 +353,9 @@ pub fn estimate_process(
             let enemys = solved_queue.try_pop_latest().unwrap_or_default();
             estimator_poll.update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys);
             snapshot_seq = snapshot_seq.wrapping_add(1);
-            fire_control_queue.push_latest(FireControlSnapshot {
+            track_queue.push_latest(PlannerTrackSnapshot {
                 seq: snapshot_seq,
-                target: estimator_poll.selected_target_snapshot(),
+                target: estimator_poll.selected_snapshot(),
                 publish_tp: Instant::now(),
             });
         }
@@ -372,13 +363,13 @@ pub fn estimate_process(
 }
 
 pub fn control_loop_250hz(
-    fire_control_queue: Arc<RbtSPSCQueueAsync<FireControlSnapshot>>,
+    track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
     feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
-        let fire_control = FireControl::new(cfg.general_cfg.bullet_speed);
-        let fire_gate = fire_control.fire_gate_config();
+        let fire_gate = FireGateConfig::default();
+        let mut yaw_planner = YawPlanner::default();
         let mut yaw_mpc = match SecondOrderPositionMpc::new(SecondOrderPositionMpcConfig::default())
         {
             Ok(mpc) => mpc,
@@ -388,7 +379,7 @@ pub fn control_loop_250hz(
                 return;
             }
         };
-        let mut latest_snapshot: Option<FireControlSnapshot> = None;
+        let mut latest_snapshot: Option<PlannerTrackSnapshot> = None;
         let mut latest_feedback: Option<(SensData, Instant)> = None;
         let mut frame_seq = 0_u8;
         let mut tick_count = 0_u64;
@@ -397,12 +388,12 @@ pub fn control_loop_250hz(
 
         loop {
             ticker.tick().await;
-            if !IS_RUNNING.load(Ordering::SeqCst) && fire_control_queue.is_empty() {
+            if !IS_RUNNING.load(Ordering::SeqCst) && track_queue.is_empty() {
                 info!("control_loop_250hz: Stopping processing as IS_RUNNING is false");
                 break;
             }
 
-            if let Some(snapshot) = fire_control_queue.try_pop_latest() {
+            if let Some(snapshot) = track_queue.try_pop_latest() {
                 latest_snapshot = Some(snapshot);
             }
             if let Some(feedback) = feedback_queue.try_pop_latest() {
@@ -416,78 +407,107 @@ pub fn control_loop_250hz(
                 latest_feedback
                     .as_ref()
                     .map(|(feedback, _)| *feedback)
-                    .unwrap_or_else(|| fallback_feedback(cfg.general_cfg.bullet_speed))
+                    .unwrap_or_else(|| default_feedback(cfg.general_cfg.bullet_speed))
             } else {
-                fallback_feedback(cfg.general_cfg.bullet_speed)
+                default_feedback(cfg.general_cfg.bullet_speed)
             };
 
             let mut control_data = hold_current_gimbal_control(feedback);
             let mut target_seen = false;
             let mut stale = false;
             let mut yaw_error_deg = 0.0;
-            let mut pitch_error_deg = 0.0;
+            let pitch_error_deg = 0.0;
             let mut tolerance_deg = fire_gate.yaw_tolerance_deg(0.0);
 
             if let Some(snapshot) = latest_snapshot.as_ref() {
                 let snapshot_age_ms = snapshot.publish_tp.elapsed().as_secs_f64() * 1_000.0;
                 stale = snapshot_age_ms > FIRE_CONTROL_SNAPSHOT_STALE_MS;
 
-                if !stale && let Some(target) = snapshot.target {
+                if !stale && let Some(snapshot_target) = snapshot.target {
                     target_seen = true;
-                    match fire_control.aim_at_base_point(target.target_base_mm) {
-                        Ok(aim) => {
-                            let yaw_command = match yaw_mpc.update(
-                                aim.yaw_deg,
+                    if snapshot_target.track_valid {
+                        let bullet_speed_mps =
+                            feedback_bullet_speed(&feedback, cfg.general_cfg.bullet_speed);
+                        let target = PlannerTarget::from_snapshot(&snapshot_target);
+                        let plan = yaw_planner.plan(Some(target), bullet_speed_mps);
+
+                        if plan.control {
+                            let yaw_ref_deg: Vec<f64> = plan
+                                .yaw_ref_rad
+                                .iter()
+                                .map(|value| value.to_degrees())
+                                .collect();
+                            let yaw_rate_ref_deg_s: Vec<f64> = plan
+                                .yaw_rate_ref_rad_s
+                                .iter()
+                                .map(|value| value.to_degrees())
+                                .collect();
+
+                            match yaw_mpc.update_trajectory(
+                                &yaw_ref_deg,
+                                &yaw_rate_ref_deg_s,
                                 feedback.gimbal_yaw as f64,
                                 feedback.yaw_speed as f64,
                                 dt_s,
                             ) {
-                                Ok(output) => output.command_deg,
-                                Err(err) => {
-                                    warn!("control_loop_250hz: yaw MPC failed: {err}");
-                                    aim.yaw_deg
+                                Ok(output) => {
+                                    let impact_ref_deg: Vec<f64> = plan
+                                        .impact_delta_angle_ref_rad
+                                        .iter()
+                                        .map(|value| value.to_degrees())
+                                        .collect();
+                                    let distance_m =
+                                        plan.target_position_m.x.hypot(plan.target_position_m.y);
+                                    tolerance_deg = fire_gate.yaw_tolerance_deg(distance_m);
+                                    let gate_result =
+                                        fire_gate.count_viable_shot_slots(ShotSlotGate {
+                                            predicted_yaw_deg: &output.predicted_yaw_deg,
+                                            reference_yaw_deg: &output.reference_yaw_deg,
+                                            impact_delta_angle_ref_deg: Some(&impact_ref_deg),
+                                            tolerance_deg,
+                                            first_slot_time_s: dt_s,
+                                            target_omega_rad_s: target.state()[7],
+                                            require_impact_angle_gate: true,
+                                            mcu_fire_permit: feedback_fresh
+                                                && feedback.mcu_fire_permit
+                                                && snapshot_target.fire_permit,
+                                        });
+                                    yaw_error_deg = gate_result
+                                        .first_slot_error_deg
+                                        .unwrap_or(output.preview_tracking_error_deg)
+                                        .abs();
+                                    let shot_mode = if gate_result.viable_slot_count > 0 {
+                                        ShotMode::AutoFire
+                                    } else {
+                                        ShotMode::AimOnly
+                                    };
+
+                                    control_data = CtrlData {
+                                        gimbal_yaw: output.command_deg as f32,
+                                        gimbal_pitch: feedback.gimbal_pitch,
+                                        shot_mode,
+                                        shot_buff_mode: ShotBuffMode::ShotBuffOff,
+                                        aiming_state: AimingState::AimingWithTarget,
+                                    };
                                 }
-                            };
-
-                            tolerance_deg =
-                                fire_gate.yaw_tolerance_deg(target.distance_mm / 1_000.0);
-                            yaw_error_deg =
-                                shortest_angle_delta_deg(aim.yaw_deg, feedback.gimbal_yaw as f64)
-                                    .abs();
-                            pitch_error_deg = (aim.pitch_deg - feedback.gimbal_pitch as f64).abs();
-                            let command_stable = fire_gate.command_is_stable(
-                                shortest_angle_delta_deg(yaw_command, feedback.gimbal_yaw as f64)
-                                    .abs(),
-                                (aim.pitch_deg - feedback.gimbal_pitch as f64).abs(),
-                                tolerance_deg,
-                            );
-                            let follow_ready = fire_gate.follow_is_ready(
-                                yaw_error_deg,
-                                pitch_error_deg,
-                                tolerance_deg,
-                            );
-                            let fire_ready = feedback_fresh
-                                && feedback.mcu_fire_permit
-                                && target.fire_permit
-                                && command_stable
-                                && follow_ready;
-
-                            control_data = CtrlData {
-                                gimbal_yaw: yaw_command as f32,
-                                gimbal_pitch: aim.pitch_deg as f32,
-                                shot_mode: if fire_ready {
-                                    ShotMode::AutoFire
-                                } else {
-                                    ShotMode::AimOnly
-                                },
-                                shot_buff_mode: ShotBuffMode::ShotBuffOff,
-                                aiming_state: AimingState::AimingWithTarget,
-                            };
+                                Err(err) => {
+                                    warn!("control_loop_250hz: yaw trajectory MPC failed: {err}");
+                                    yaw_mpc.reset(
+                                        feedback.gimbal_yaw as f64,
+                                        feedback.yaw_speed as f64,
+                                    );
+                                }
+                            }
+                        } else {
+                            yaw_mpc.reset(feedback.gimbal_yaw as f64, feedback.yaw_speed as f64);
                         }
-                        Err(err) => {
-                            warn!("control_loop_250hz: failed to aim target: {err}");
-                        }
+                    } else {
+                        yaw_planner.reset();
+                        yaw_mpc.reset(feedback.gimbal_yaw as f64, feedback.yaw_speed as f64);
                     }
+                } else {
+                    yaw_planner.reset();
+                    yaw_mpc.reset(feedback.gimbal_yaw as f64, feedback.yaw_speed as f64);
                 }
             }
 
@@ -539,13 +559,23 @@ async fn pop_latest_until_running<T>(queue: &RbtSPSCQueueAsync<T>, timeout: Dura
     }
 }
 
+fn feedback_bullet_speed(feedback: &SensData, configured_bullet_speed_mps: f64) -> f64 {
+    if feedback.bullet_speed.is_finite() && feedback.bullet_speed > 1.0 {
+        f64::from(feedback.bullet_speed)
+    } else if configured_bullet_speed_mps.is_finite() && configured_bullet_speed_mps > 1.0 {
+        configured_bullet_speed_mps
+    } else {
+        f64::from(DEFAULT_BULLET_SPEED_MPS)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn fallback_feedback_disables_mcu_fire_permit() {
-        let feedback = fallback_feedback(24.0);
+    fn default_feedback_disables_mcu_fire_permit() {
+        let feedback = default_feedback(24.0);
 
         assert_eq!(feedback.gimbal_yaw, 0.0);
         assert_eq!(feedback.gimbal_pitch, 0.0);
