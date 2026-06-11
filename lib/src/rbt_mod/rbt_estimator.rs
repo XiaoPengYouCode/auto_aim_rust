@@ -130,6 +130,20 @@ pub struct RbtEstimator {
     pub single_or_double: bool, // 单或双装甲板更新，用于设置ESKF测量噪声
 }
 
+/// Latest target point for the fire-control loop.
+///
+/// The point is expressed in base coordinates, in millimeters, and is intended
+/// to be consumed as a latest-value snapshot. It deliberately contains no
+/// control-loop state; the gimbal feedback loop owns convergence.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RbtTargetSnapshot {
+    pub enemy_id: EnemyId,
+    pub target_base_mm: na::Point3<f64>,
+    pub distance_mm: f64,
+    pub yaw_deg: f64,
+    pub fire_permit: bool,
+}
+
 impl RbtEstimator {
     pub fn new(enemy_id: EnemyId) -> Self {
         Self {
@@ -360,6 +374,32 @@ impl RbtHandlerPoll {
 
     pub fn selected_enemy_id(&self) -> Option<EnemyId> {
         self.enemy_selector.selected_enemy_id()
+    }
+
+    pub fn selected_target_snapshot(&self) -> Option<RbtTargetSnapshot> {
+        let enemy_id = self.selected_enemy_id()?;
+        let estimator = self.estimators.get(&enemy_id)?;
+        let enemy = estimator.tracked_enemy.as_ref()?;
+        let armor = enemy.solved_enemy.armors.first()?;
+        let translation = armor.pose().translation().vector;
+        let target_base_mm = na::Point3::new(translation.x, translation.y, translation.z);
+
+        if !target_base_mm.coords.iter().all(|value| value.is_finite()) {
+            return None;
+        }
+
+        let distance_mm = target_base_mm.x.hypot(target_base_mm.y);
+        if distance_mm <= 1e-6 {
+            return None;
+        }
+
+        Some(RbtTargetSnapshot {
+            enemy_id,
+            target_base_mm,
+            distance_mm,
+            yaw_deg: target_base_mm.y.atan2(target_base_mm.x).to_degrees(),
+            fire_permit: estimator.fire,
+        })
     }
 }
 
