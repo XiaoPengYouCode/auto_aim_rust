@@ -201,6 +201,17 @@ impl Default for YawPlan {
 }
 
 #[derive(Debug, Clone)]
+struct YawReference {
+    yaw_ref_rad: Vec<f64>,
+    yaw_rate_ref_rad_s: Vec<f64>,
+    impact_delta_angle_ref_rad: Vec<f64>,
+    first_target_pos_m: na::Point3<f64>,
+    first_selected_index: isize,
+    first_fly_time_s: f64,
+    first_impact_delta_angle_rad: f64,
+}
+
+#[derive(Debug, Clone)]
 pub struct YawPlanner {
     config: YawPlannerConfig,
     last_selected_armor_index: isize,
@@ -271,36 +282,26 @@ impl YawPlanner {
             22.0
         };
 
-        let mut plan = YawPlan::default();
-        let mut first_selected_index = self.last_selected_armor_index;
-        let mut first_fly_time = 0.0;
-        let mut first_impact_delta = 0.0;
-        let build_ok = self.build_yaw_reference(
-            target,
-            bullet_speed_mps,
-            &mut plan.yaw_ref_rad,
-            &mut plan.yaw_rate_ref_rad_s,
-            &mut plan.target_position_m,
-            &mut first_selected_index,
-            &mut first_fly_time,
-            &mut first_impact_delta,
-            &mut plan.impact_delta_angle_ref_rad,
-        );
-
-        if !build_ok || plan.yaw_ref_rad.is_empty() || plan.yaw_rate_ref_rad_s.is_empty() {
+        let Some(reference) = self.build_yaw_reference(target, bullet_speed_mps) else {
             return YawPlan::default();
-        }
+        };
 
-        plan.control = true;
-        plan.target_yaw_rad = plan.yaw_ref_rad[0];
-        plan.target_yaw_rate_rad_s = plan.yaw_rate_ref_rad_s[0];
-        plan.selected_armor_index = first_selected_index;
-        plan.estimated_fly_time_s = first_fly_time;
-        plan.impact_delta_angle_rad = first_impact_delta;
+        let plan = YawPlan {
+            control: true,
+            target_yaw_rad: reference.yaw_ref_rad[0],
+            target_yaw_rate_rad_s: reference.yaw_rate_ref_rad_s[0],
+            selected_armor_index: reference.first_selected_index,
+            estimated_fly_time_s: reference.first_fly_time_s,
+            impact_delta_angle_rad: reference.first_impact_delta_angle_rad,
+            impact_delta_angle_ref_rad: reference.impact_delta_angle_ref_rad,
+            yaw_ref_rad: reference.yaw_ref_rad,
+            yaw_rate_ref_rad_s: reference.yaw_rate_ref_rad_s,
+            target_position_m: reference.first_target_pos_m,
+        };
         self.last_yaw_ref_rad = plan.yaw_ref_rad.clone();
-        self.last_selected_armor_index = first_selected_index;
-        if first_fly_time > 1e-6 {
-            self.last_fly_time_s = Some(first_fly_time);
+        self.last_selected_armor_index = plan.selected_armor_index;
+        if plan.estimated_fly_time_s > 1e-6 {
+            self.last_fly_time_s = Some(plan.estimated_fly_time_s);
         }
         plan
     }
@@ -309,24 +310,18 @@ impl YawPlanner {
         &self,
         mut target: PlannerTarget,
         bullet_speed_mps: f64,
-        yaw_ref: &mut Vec<f64>,
-        yaw_rate_ref: &mut Vec<f64>,
-        first_target_pos: &mut na::Point3<f64>,
-        first_selected_index: &mut isize,
-        first_fly_time: &mut f64,
-        first_impact_delta_angle: &mut f64,
-        impact_delta_angle_ref: &mut Vec<f64>,
-    ) -> bool {
+    ) -> Option<YawReference> {
         let horizon = self.config.preview_horizon.max(4);
         let dt = self.config.preview_dt_s.max(1e-3);
-        yaw_ref.clear();
-        yaw_ref.resize(horizon, 0.0);
-        yaw_rate_ref.clear();
-        yaw_rate_ref.resize(horizon, 0.0);
-        impact_delta_angle_ref.clear();
-        impact_delta_angle_ref.resize(horizon, 0.0);
+        let mut yaw_ref_rad = vec![0.0; horizon];
+        let mut yaw_rate_ref_rad_s = vec![0.0; horizon];
+        let mut impact_delta_angle_ref_rad = vec![0.0; horizon];
+        let mut first_target_pos_m = na::Point3::origin();
+        let mut first_selected_index = self.last_selected_armor_index;
+        let mut first_fly_time_s = 0.0;
+        let mut first_impact_delta_angle_rad = 0.0;
 
-        let mut preferred_index = *first_selected_index;
+        let mut preferred_index = first_selected_index;
         let mut fly_time_hint = self.last_fly_time_s;
         let mut continuity_yaw = self
             .last_yaw_ref_rad
@@ -339,41 +334,51 @@ impl YawPlanner {
                 target.predict(dt);
             }
 
-            let Some(solution) = self.solve_aim(
+            let solution = self.solve_aim(
                 target,
                 bullet_speed_mps,
                 preferred_index,
                 fly_time_hint,
                 continuity_yaw,
-            ) else {
-                return false;
-            };
+            )?;
 
             preferred_index = solution.selected_index;
             fly_time_hint = Some(solution.fly_time_s);
-            impact_delta_angle_ref[index] = solution.impact_delta_angle_rad;
+            impact_delta_angle_ref_rad[index] = solution.impact_delta_angle_rad;
 
             if index == 0 {
-                yaw_ref[0] = continuity_yaw
+                yaw_ref_rad[0] = continuity_yaw
                     .map(|yaw| closest_equivalent_rad(yaw, solution.yaw_rad))
                     .unwrap_or(solution.yaw_rad);
-                continuity_yaw = Some(yaw_ref[0]);
-                *first_target_pos = solution.aim_pos_m;
-                *first_selected_index = solution.selected_index;
-                *first_fly_time = solution.fly_time_s;
-                *first_impact_delta_angle = solution.impact_delta_angle_rad;
+                continuity_yaw = Some(yaw_ref_rad[0]);
+                first_target_pos_m = solution.aim_pos_m;
+                first_selected_index = solution.selected_index;
+                first_fly_time_s = solution.fly_time_s;
+                first_impact_delta_angle_rad = solution.impact_delta_angle_rad;
             } else {
-                yaw_ref[index] = closest_equivalent_rad(yaw_ref[index - 1], solution.yaw_rad);
-                continuity_yaw = Some(yaw_ref[index]);
+                yaw_ref_rad[index] =
+                    closest_equivalent_rad(yaw_ref_rad[index - 1], solution.yaw_rad);
+                continuity_yaw = Some(yaw_ref_rad[index]);
             }
         }
 
-        yaw_rate_ref[0] = (yaw_ref[1] - yaw_ref[0]) / dt;
+        yaw_rate_ref_rad_s[0] = (yaw_ref_rad[1] - yaw_ref_rad[0]) / dt;
         for index in 1..horizon - 1 {
-            yaw_rate_ref[index] = (yaw_ref[index + 1] - yaw_ref[index - 1]) / (2.0 * dt);
+            yaw_rate_ref_rad_s[index] =
+                (yaw_ref_rad[index + 1] - yaw_ref_rad[index - 1]) / (2.0 * dt);
         }
-        yaw_rate_ref[horizon - 1] = (yaw_ref[horizon - 1] - yaw_ref[horizon - 2]) / dt;
-        true
+        yaw_rate_ref_rad_s[horizon - 1] =
+            (yaw_ref_rad[horizon - 1] - yaw_ref_rad[horizon - 2]) / dt;
+
+        Some(YawReference {
+            yaw_ref_rad,
+            yaw_rate_ref_rad_s,
+            impact_delta_angle_ref_rad,
+            first_target_pos_m,
+            first_selected_index,
+            first_fly_time_s,
+            first_impact_delta_angle_rad,
+        })
     }
 
     fn solve_aim(

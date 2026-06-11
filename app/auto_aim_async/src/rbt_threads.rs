@@ -559,6 +559,16 @@ async fn pop_latest_until_running<T>(queue: &RbtSPSCQueueAsync<T>, timeout: Dura
     }
 }
 
+fn feedback_bullet_speed(feedback: &SensData, configured_bullet_speed_mps: f64) -> f64 {
+    if feedback.bullet_speed.is_finite() && feedback.bullet_speed > 1.0 {
+        f64::from(feedback.bullet_speed)
+    } else if configured_bullet_speed_mps.is_finite() && configured_bullet_speed_mps > 1.0 {
+        configured_bullet_speed_mps
+    } else {
+        f64::from(DEFAULT_BULLET_SPEED_MPS)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,15 +581,5 @@ mod tests {
         assert_eq!(feedback.gimbal_pitch, 0.0);
         assert!(!feedback.mcu_fire_permit);
         assert_eq!(feedback.task_mode, TaskMode::AutoShot);
-    }
-}
-
-fn feedback_bullet_speed(feedback: &SensData, configured_bullet_speed_mps: f64) -> f64 {
-    if feedback.bullet_speed.is_finite() && feedback.bullet_speed > 1.0 {
-        f64::from(feedback.bullet_speed)
-    } else if configured_bullet_speed_mps.is_finite() && configured_bullet_speed_mps > 1.0 {
-        configured_bullet_speed_mps
-    } else {
-        f64::from(DEFAULT_BULLET_SPEED_MPS)
     }
 }
