@@ -23,6 +23,9 @@ pub enum RbtError {
     #[error("Invalid config: {0}")]
     InvalidConfig(String),
 
+    #[error("Precondition failed: {0}")]
+    PreconditionFailed(String),
+
     // IO相关错误
     /// 注意 tokio::io::Error 本质是 std::io::Error
     /// 报错之后需要确认到底是同步接口的错，还是异步接口的错

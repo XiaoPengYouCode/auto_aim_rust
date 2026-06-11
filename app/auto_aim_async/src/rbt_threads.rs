@@ -2,9 +2,12 @@ use log::{error, info, warn};
 use ort::inputs;
 use ort::value::TensorRef;
 use std::collections::HashMap;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::task::JoinHandle;
+use tokio::time::Instant;
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
 // use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
@@ -13,66 +16,139 @@ use lib::{
     rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2,
     rbt_infra::rbt_cfg::RbtCfg,
     rbt_infra::{
-        rbt_global::{FAILED_COUNT, GENERIC_RBT_CFG, IS_RUNNING},
+        rbt_global::{GENERIC_RBT_CFG, IS_RUNNING},
         rbt_queue_async::RbtSPSCQueueAsync,
     },
     rbt_mod::{
         rbt_armor::detected_armor::DetectedArmor,
+        rbt_comm::rbt_comm_frame::{
+            AimingState, CAN_FRAME_SIZE, CONTROL_LOOP_PERIOD_MS, CtrlData,
+            DEFAULT_BULLET_SPEED_MPS, FEEDBACK_STALE_TIMEOUT_MS, SelfFraction, SensData,
+            ShotBuffMode, ShotMode, TaskMode,
+        },
         rbt_detector::{
             BBox,
             rbt_frame::{RbtFrame, RbtFrameStage},
             rbt_yolo::{YOLO_LABEL_TABLE, letterbox, nms},
         },
-        rbt_estimator::RbtHandlerPoll,
         rbt_estimator::rbt_enemy_dynamic_model::EnemyId,
+        rbt_estimator::{RbtHandlerPoll, RbtTargetSnapshot},
+        rbt_fire_control::{FireControl, SecondOrderPositionMpc, SecondOrderPositionMpcConfig},
         rbt_solver::enemys_solver,
     },
 };
+
+const STATIC_IMAGE_FRAME_PERIOD_MS: u64 = 16;
+const FIRE_CONTROL_SNAPSHOT_STALE_MS: f64 = 180.0;
+const CONTROL_STATUS_LOG_PERIOD_TICKS: u64 = 50;
+const PIPELINE_POP_TIMEOUT_MS: u64 = 100;
+
+#[derive(Debug, Clone)]
+pub struct FireControlSnapshot {
+    seq: u64,
+    target: Option<RbtTargetSnapshot>,
+    publish_tp: Instant,
+}
+
+pub fn static_image_path() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("imgs")
+        .join("test_resize.jpg")
+}
+
+fn fallback_feedback(bullet_speed_mps: f64) -> SensData {
+    SensData {
+        task_mode: TaskMode::AutoShot,
+        self_fraction: SelfFraction::Blue,
+        bullet_speed: if bullet_speed_mps.is_finite() && bullet_speed_mps > 0.0 {
+            bullet_speed_mps as f32
+        } else {
+            DEFAULT_BULLET_SPEED_MPS
+        },
+        gimbal_roll: 0.0,
+        gimbal_yaw: 0.0,
+        gimbal_pitch: 0.0,
+        yaw_speed: 0.0,
+        mcu_fire_permit: false,
+        raw_task_mode: TaskMode::AutoShot.into(),
+        mapped_task_mode: TaskMode::AutoShot,
+    }
+}
+
+fn hold_current_gimbal_control(feedback: SensData) -> CtrlData {
+    CtrlData {
+        gimbal_yaw: feedback.gimbal_yaw,
+        gimbal_pitch: feedback.gimbal_pitch,
+        shot_mode: ShotMode::DoNothing,
+        shot_buff_mode: ShotBuffMode::ShotBuffOff,
+        aiming_state: AimingState::AimingNoTarget,
+    }
+}
+
+fn normalize_angle_deg(angle_deg: f64) -> f64 {
+    let mut result = (angle_deg + 180.0) % 360.0;
+    if result < 0.0 {
+        result += 360.0;
+    }
+    result - 180.0
+}
+
+fn shortest_angle_delta_deg(target_deg: f64, current_deg: f64) -> f64 {
+    normalize_angle_deg(target_deg - current_deg)
+}
 
 /// 图像预处理阶段：读取图像并通过通道发送到下一阶段。
 /// 此函数负责读取图像、调整图像大小、转换为归一化格式，并为推理阶段准备数据。
 pub fn pre_process(queue: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
     tokio::spawn(async move {
-        for frame_id in 1..=1000 {
+        let input_template = match tokio::task::spawn_blocking(|| {
+            let image_path = static_image_path();
+            let resized_img = image::open(&image_path)
+                .map_err(|err| format!("failed to open {}: {err}", image_path.display()))?;
+            let mut input_array = nd::Array4::zeros((1, 3, 384, 640));
+            letterbox(&mut input_array, &resized_img);
+            Ok::<_, String>(input_array)
+        })
+        .await
+        {
+            Ok(Ok(input_template)) => input_template,
+            Ok(Err(err)) => {
+                error!("pre_process: {err}");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+            Err(err) => {
+                error!("pre_process: failed to prepare static image: {err}");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+
+        info!(
+            "pre_process: loaded static image {}",
+            static_image_path().display()
+        );
+
+        let mut frame_id = 0_u64;
+        let mut ticker = tokio::time::interval(Duration::from_millis(STATIC_IMAGE_FRAME_PERIOD_MS));
+        loop {
+            ticker.tick().await;
+            if !IS_RUNNING.load(Ordering::SeqCst) {
+                info!("pre_process: Stopping processing as IS_RUNNING is false");
+                break;
+            }
+
+            frame_id = frame_id.wrapping_add(1);
             let mut rbt_frame = RbtFrame::new();
-            // 在阻塞线程中执行图像处理操作，以避免阻塞异步运行时
-            let result = tokio::task::spawn_blocking(move || {
-                // 从磁盘加载图像
-                let resized_img =
-                    image::open("../../../imgs/test_resize.jpg").expect("无法打开图像");
+            rbt_frame.pre_data().assign(&input_template.view());
+            rbt_frame.set_id(frame_id);
+            rbt_frame.set_state(RbtFrameStage::Pre);
+            queue.push_latest(rbt_frame);
 
-                // 创建一个 4D 数组以存储处理后的图像数据。
-                let mut input_array = nd::Array4::zeros((1, 3, 384, 640));
-                letterbox(&mut input_array, &resized_img);
-
-                rbt_frame.pre_data().assign(&input_array);
-                rbt_frame.set_id(frame_id);
-                rbt_frame.set_state(RbtFrameStage::Pre);
-                rbt_frame
-            })
-            .await;
-
-            // 处理阻塞任务的结果。
-            if let Ok(frame) = result {
-                // 通过通道将处理后的帧发送到下一阶段
-                let id = frame.id(); // 获取帧 ID，用于日志记录
-                info!(
-                    "预处理阶段：图像 {} 处理完成，耗时 {:?}",
-                    id,
-                    frame.time_used()
-                );
-                queue.push_latest(frame);
-                if id == 1000 {
-                    IS_RUNNING.store(false, std::sync::atomic::Ordering::SeqCst);
-                    info!(
-                        "Failed count: {}",
-                        FAILED_COUNT.load(std::sync::atomic::Ordering::SeqCst)
-                    );
-                    info!("预处理阶段：已处理完所有图像，停止处理");
-                    break;
-                }
-            } else {
-                error!("预处理阶段：图像 {} 处理失败", frame_id);
+            if frame_id == 1 || frame_id.is_multiple_of(60) {
+                info!("pre_process: replayed static frame {}", frame_id);
             }
         }
     })
@@ -86,11 +162,16 @@ pub fn infer(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            if !IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+            if !IS_RUNNING.load(Ordering::SeqCst) {
                 info!("infer: Stopping processing as IS_RUNNING is false");
                 break;
             }
-            if let Some(mut frame) = pre_infer_queue.pop_latest().await {
+            if let Some(mut frame) = pop_latest_until_running(
+                &pre_infer_queue,
+                Duration::from_millis(PIPELINE_POP_TIMEOUT_MS),
+            )
+            .await
+            {
                 info!(
                     "infer: Frame ID {} received form processing, time used: {:?}",
                     frame.id(),
@@ -128,6 +209,7 @@ pub fn infer(
                     session = session_return; // 确保会话在闭包外部可用
                 } else {
                     warn!("infer: Failed to process frame ID: {}", id);
+                    IS_RUNNING.store(false, Ordering::SeqCst);
                     break;
                 }
             }
@@ -144,7 +226,7 @@ pub fn post_process(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         loop {
-            if !IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) {
+            if !IS_RUNNING.load(Ordering::SeqCst) {
                 info!("post_process: Stopping processing as IS_RUNNING is false");
                 break;
             }
@@ -152,7 +234,10 @@ pub fn post_process(
             let game_cfg = cfg.game_cfg.clone();
             let cam_k = cfg.cam_cfg.cam_k();
             let rec = rec.clone();
-            if let Some(mut frame) = frame.pop_latest().await {
+            if let Some(mut frame) =
+                pop_latest_until_running(&frame, Duration::from_millis(PIPELINE_POP_TIMEOUT_MS))
+                    .await
+            {
                 let time_used = frame.time_used(); // 获取处理时间
                 info!(
                     "post_process: Frame ID {} received in {:?}",
@@ -252,27 +337,219 @@ pub fn post_process(
                     warn!("post_process: Failed to process frame ID: {}", id);
                 }
             } else {
-                warn!("post_process: No frame available for processing");
-                continue; // 如果没有数据，继续等待
+                continue;
             }
         }
     })
 }
 
 /// 500Hz 频率通讯
-pub fn estimate_process(solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>) -> JoinHandle<()> {
+pub fn estimate_process(
+    solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
+    fire_control_queue: Arc<RbtSPSCQueueAsync<FireControlSnapshot>>,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(2));
         let mut estimator_poll = RbtHandlerPoll::new();
+        let mut snapshot_seq = 0_u64;
         loop {
             ticker.tick().await;
-            if !IS_RUNNING.load(std::sync::atomic::Ordering::SeqCst) && solved_queue.is_empty() {
+            if !IS_RUNNING.load(Ordering::SeqCst) && solved_queue.is_empty() {
                 info!("estimate_process: Stopping processing as IS_RUNNING is false");
                 break;
             }
 
             let enemys = solved_queue.try_pop_latest().unwrap_or_default();
             estimator_poll.update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys);
+            snapshot_seq = snapshot_seq.wrapping_add(1);
+            fire_control_queue.push_latest(FireControlSnapshot {
+                seq: snapshot_seq,
+                target: estimator_poll.selected_target_snapshot(),
+                publish_tp: Instant::now(),
+            });
         }
     })
+}
+
+pub fn control_loop_250hz(
+    fire_control_queue: Arc<RbtSPSCQueueAsync<FireControlSnapshot>>,
+    feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
+        let fire_control = FireControl::new(cfg.general_cfg.bullet_speed);
+        let fire_gate = fire_control.fire_gate_config();
+        let mut yaw_mpc = match SecondOrderPositionMpc::new(SecondOrderPositionMpcConfig::default())
+        {
+            Ok(mpc) => mpc,
+            Err(err) => {
+                error!("control_loop_250hz: failed to build yaw MPC: {err}");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+        let mut latest_snapshot: Option<FireControlSnapshot> = None;
+        let mut latest_feedback: Option<(SensData, Instant)> = None;
+        let mut frame_seq = 0_u8;
+        let mut tick_count = 0_u64;
+        let dt_s = CONTROL_LOOP_PERIOD_MS * 1e-3;
+        let mut ticker = tokio::time::interval(Duration::from_secs_f64(dt_s));
+
+        loop {
+            ticker.tick().await;
+            if !IS_RUNNING.load(Ordering::SeqCst) && fire_control_queue.is_empty() {
+                info!("control_loop_250hz: Stopping processing as IS_RUNNING is false");
+                break;
+            }
+
+            if let Some(snapshot) = fire_control_queue.try_pop_latest() {
+                latest_snapshot = Some(snapshot);
+            }
+            if let Some(feedback) = feedback_queue.try_pop_latest() {
+                latest_feedback = Some((feedback, Instant::now()));
+            }
+
+            let feedback_fresh = latest_feedback.as_ref().is_some_and(|(_, tp)| {
+                tp.elapsed() <= Duration::from_millis(FEEDBACK_STALE_TIMEOUT_MS)
+            });
+            let feedback = if feedback_fresh {
+                latest_feedback
+                    .as_ref()
+                    .map(|(feedback, _)| *feedback)
+                    .unwrap_or_else(|| fallback_feedback(cfg.general_cfg.bullet_speed))
+            } else {
+                fallback_feedback(cfg.general_cfg.bullet_speed)
+            };
+
+            let mut control_data = hold_current_gimbal_control(feedback);
+            let mut target_seen = false;
+            let mut stale = false;
+            let mut yaw_error_deg = 0.0;
+            let mut pitch_error_deg = 0.0;
+            let mut tolerance_deg = fire_gate.yaw_tolerance_deg(0.0);
+
+            if let Some(snapshot) = latest_snapshot.as_ref() {
+                let snapshot_age_ms = snapshot.publish_tp.elapsed().as_secs_f64() * 1_000.0;
+                stale = snapshot_age_ms > FIRE_CONTROL_SNAPSHOT_STALE_MS;
+
+                if !stale && let Some(target) = snapshot.target {
+                    target_seen = true;
+                    match fire_control.aim_at_base_point(target.target_base_mm) {
+                        Ok(aim) => {
+                            let yaw_command = match yaw_mpc.update(
+                                aim.yaw_deg,
+                                feedback.gimbal_yaw as f64,
+                                feedback.yaw_speed as f64,
+                                dt_s,
+                            ) {
+                                Ok(output) => output.command_deg,
+                                Err(err) => {
+                                    warn!("control_loop_250hz: yaw MPC failed: {err}");
+                                    aim.yaw_deg
+                                }
+                            };
+
+                            tolerance_deg =
+                                fire_gate.yaw_tolerance_deg(target.distance_mm / 1_000.0);
+                            yaw_error_deg =
+                                shortest_angle_delta_deg(aim.yaw_deg, feedback.gimbal_yaw as f64)
+                                    .abs();
+                            pitch_error_deg = (aim.pitch_deg - feedback.gimbal_pitch as f64).abs();
+                            let command_stable = fire_gate.command_is_stable(
+                                shortest_angle_delta_deg(yaw_command, feedback.gimbal_yaw as f64)
+                                    .abs(),
+                                (aim.pitch_deg - feedback.gimbal_pitch as f64).abs(),
+                                tolerance_deg,
+                            );
+                            let follow_ready = fire_gate.follow_is_ready(
+                                yaw_error_deg,
+                                pitch_error_deg,
+                                tolerance_deg,
+                            );
+                            let fire_ready = feedback_fresh
+                                && feedback.mcu_fire_permit
+                                && target.fire_permit
+                                && command_stable
+                                && follow_ready;
+
+                            control_data = CtrlData {
+                                gimbal_yaw: yaw_command as f32,
+                                gimbal_pitch: aim.pitch_deg as f32,
+                                shot_mode: if fire_ready {
+                                    ShotMode::AutoFire
+                                } else {
+                                    ShotMode::AimOnly
+                                },
+                                shot_buff_mode: ShotBuffMode::ShotBuffOff,
+                                aiming_state: AimingState::AimingWithTarget,
+                            };
+                        }
+                        Err(err) => {
+                            warn!("control_loop_250hz: failed to aim target: {err}");
+                        }
+                    }
+                }
+            }
+
+            let mut payload = [0_u8; CAN_FRAME_SIZE];
+            if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
+                warn!("control_loop_250hz: failed to serialize control frame: {err}");
+            }
+
+            tick_count = tick_count.wrapping_add(1);
+            frame_seq = frame_seq.wrapping_add(1);
+
+            if tick_count == 1 || tick_count.is_multiple_of(CONTROL_STATUS_LOG_PERIOD_TICKS) {
+                let snapshot_seq = latest_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.seq)
+                    .unwrap_or(0);
+                info!(
+                    "control_loop_250hz: seq={} target={} stale={} fb={} yaw={:.2}->{:.2} pitch={:.2}->{:.2} err=({:.2},{:.2}) tol={:.2} shot={:?} can={:02X?}",
+                    snapshot_seq,
+                    target_seen,
+                    stale,
+                    feedback_fresh,
+                    feedback.gimbal_yaw,
+                    control_data.gimbal_yaw,
+                    feedback.gimbal_pitch,
+                    control_data.gimbal_pitch,
+                    yaw_error_deg,
+                    pitch_error_deg,
+                    tolerance_deg,
+                    control_data.shot_mode,
+                    payload,
+                );
+            }
+        }
+    })
+}
+
+async fn pop_latest_until_running<T>(queue: &RbtSPSCQueueAsync<T>, timeout: Duration) -> Option<T> {
+    loop {
+        if let Some(item) = queue.try_pop_latest() {
+            return Some(item);
+        }
+        if !IS_RUNNING.load(Ordering::SeqCst) {
+            return None;
+        }
+        if let Ok(item) = tokio::time::timeout(timeout, queue.pop_latest()).await {
+            return item;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_feedback_disables_mcu_fire_permit() {
+        let feedback = fallback_feedback(24.0);
+
+        assert_eq!(feedback.gimbal_yaw, 0.0);
+        assert_eq!(feedback.gimbal_pitch, 0.0);
+        assert!(!feedback.mcu_fire_permit);
+        assert_eq!(feedback.task_mode, TaskMode::AutoShot);
+    }
 }
