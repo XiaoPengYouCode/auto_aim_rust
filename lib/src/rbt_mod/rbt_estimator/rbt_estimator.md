@@ -1,40 +1,17 @@
 # `rbt_estimator` 估计器模块
 
-## `enemy_estimator` 
+估计器主线现在以 `YpdAngleTracker` 为核心，不再维护旧的敌方状态镜像。
 
-- 状态变量
-  1. `theta` 车体中心相对于世界坐标系的角度 `degree`
-  2. `distance` 敌方车体中心相对于己方中心的距离 `mm`
-  3. `velocity_tang` 切向速度 `mm/s`
-  4. `velocity_norm` 法向速度 `mm/s`
-  5. `spin_velocity` 陀螺速度 `degree/s`
-- 测量变量
-  1. `theta`
-  2. `distance`
-  3. `angle_diff`
+## 主线流程
 
-首先，比赛一开始，直接创建针对六辆车的观测器
+1. `RbtHandlerPoll` 从 `RbtSolvedResults` 中选择当前要跟踪的敌方 ID。
+2. 对被选中的 `RbtEstimator`，有观测时将 `SolvedArmor` 转成 `YpdObservation`。
+3. `YpdAngleTracker` 执行预测；有观测时再做 batch update 和多装甲板 ID 匹配。
+4. tracker 输出 `YpdTrackerSnapshot`，作为当前中心、速度、yaw、半径、高度差和预测装甲板列表的唯一估计结果。
+5. 发控目标点从 `YpdTrackerSnapshot` 直接生成，不再维护额外的装甲板包装状态。
 
-观测器需要有一个状态机，来描述自己当前是什么状态，根据上一帧和当前帧的状态
+## 状态机
 
-观测器状态机
-
-- `lost`
-  - 维护一个唤醒的时间戳
-  - 如果当前帧没有，开始计时 2 s
-  - 这个过程用于过滤装甲板被打灭的情况(更好的做法是模型可以识别灰色装甲板)
-
-- `sleep` 
-  - 如果 `lost` + 计时之后没有等到这个敌人，观测器进入 `lost`，不再进行相关计算
-
-- `wake`
-  - 如果上一帧没有，但是这一帧有了，激活
-  - 该帧内需要初始化状态
-- `aim`
-  - 自瞄工作状态
-
-- `init`
-  - 开局初始化
-
-# `ESKF` 模块
-
+- `Init` / `Sleep`: 清空 tracker 和当前 snapshot。
+- `WakeUp` / `Recovery` / `Track`: 预测后用观测修正。
+- `Lost` / `Switching`: 无观测纯预测。

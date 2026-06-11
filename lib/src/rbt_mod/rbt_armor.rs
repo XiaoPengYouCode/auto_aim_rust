@@ -7,8 +7,6 @@ use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::{
 pub mod detected_armor;
 /// solver 中会用到的独占部分
 pub mod solved_armor;
-/// estimator 中会用到的部分
-pub mod tracked_armor;
 
 pub type ArmorId = EnemyId;
 

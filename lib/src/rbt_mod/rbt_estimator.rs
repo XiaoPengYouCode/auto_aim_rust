@@ -1,7 +1,7 @@
 //! 状态估计器模块
 //!
-//! 该模块实现了基于扩展卡尔曼滤波器的敌方单位状态估计功能。
-//! 通过融合视觉测量数据和运动学模型，对敌方单位的位置、速度等状态进行估计和预测。
+//! 该模块实现了基于 YPD 角度 tracker 的敌方单位状态估计功能。
+//! 通过融合视觉测量数据和几何运动模型，对敌方单位的位置、速度等状态进行估计和预测。
 //!
 //! 主要组件：
 //! - EstimatorStateMachine: 估计器状态机，管理估计器的不同工作状态
@@ -9,21 +9,21 @@
 //! - RbtHandlerPoll: 所有敌方单位估计器的管理池
 //!
 
-use log::info;
 use std::collections::HashMap;
+use std::time::Instant;
 
-use crate::rbt_base::rbt_algorithm::rbt_eskf::ESKF;
 use crate::rbt_infra::rbt_cfg::EstimatorCfg;
-use crate::rbt_mod::rbt_armor::tracked_armor::TrackedArmor;
 use crate::rbt_mod::rbt_solver::{RbtSolvedResult, RbtSolvedResults};
 
-use rbt_enemy_dynamic_model::{Enemy, EnemyId, EnemyModel, armor_switch_decision, handle_switch};
+use rbt_enemy_dynamic_model::EnemyId;
 use rbt_enemy_select::{EnemySelectHandler, TRACKED_ENEMY_IDS};
 use rbt_estimator_state::EstimatorStateMachine;
+use rbt_ypd_angle_tracker::{YpdAngleTracker, YpdObservation, YpdTrackerSnapshot};
 
-/// 动力学模型
+/// 敌方单位基础模型
 pub mod rbt_enemy_dynamic_model;
 mod rbt_enemy_select;
+pub mod rbt_ypd_angle_tracker;
 
 pub mod rbt_estimator_state {
     use crate::rbt_infra::rbt_cfg::EstimatorCfg;
@@ -118,16 +118,13 @@ pub mod rbt_estimator_state {
 /// 状态估计器
 #[derive(Debug, Clone)]
 pub struct RbtEstimator {
-    tracked_enemy: Option<Enemy>,
-    last_tracked_enemy: Option<Enemy>,
-    tracked_armor: Option<TrackedArmor>,
-    last_tracked_armor: Option<TrackedArmor>,
     state: EstimatorStateMachine,
-    eskf: ESKF<11, 4>, // 原始 ESKF 求解器
-    enemy_model: EnemyModel,
+    ypd_angle_tracker: YpdAngleTracker,
+    latest_tracker_snapshot: Option<YpdTrackerSnapshot>,
+    last_update_tp: Option<Instant>,
     pub enemy_id: EnemyId,
     pub fire: bool,             // 当前是否开火
-    pub single_or_double: bool, // 单或双装甲板更新，用于设置ESKF测量噪声
+    pub single_or_double: bool, // 当前帧是否有多装甲板观测
 }
 
 /// Latest target point for the fire-control loop.
@@ -147,18 +144,10 @@ pub struct RbtTargetSnapshot {
 impl RbtEstimator {
     pub fn new(enemy_id: EnemyId) -> Self {
         Self {
-            tracked_enemy: None,
-            last_tracked_enemy: None,
-            tracked_armor: None,
-            last_tracked_armor: None,
             state: EstimatorStateMachine::Init,
-            eskf: ESKF::<11, 4>::new(
-                na::SMatrix::<f64, 11, 11>::identity() * 100.0, // 初始协方差矩阵
-                na::SMatrix::<f64, 11, 11>::identity() * 0.1,   // 过程噪声
-                na::SMatrix::<f64, 4, 4>::identity() * 0.1,     // 测量噪声
-                0.01,
-            ),
-            enemy_model: EnemyModel {},
+            ypd_angle_tracker: YpdAngleTracker::new(),
+            latest_tracker_snapshot: None,
+            last_update_tp: None,
             enemy_id,
             fire: false,
             single_or_double: false,
@@ -166,59 +155,20 @@ impl RbtEstimator {
     }
 
     pub fn update(&mut self, cfg: &EstimatorCfg, solved_enemy: &Option<RbtSolvedResult>) {
-        // 1. 保存上一帧状态
-        self.last_tracked_enemy = self.tracked_enemy.clone();
-        self.last_tracked_armor = self.tracked_armor.clone();
+        let dt_s = self.update_dt_s();
 
-        // 2. 仅在检测到有效敌人时更新当前观测。无观测时保留状态，让 Lost 可以纯预测。
-        if let Some(solved) = solved_enemy {
-            // 如果tracked_enemy不存在，创建新的；如果存在，更新其状态
-            if let Some(enemy) = &mut self.tracked_enemy {
-                // 更新现有enemy的状态
-                enemy.nominal_state.theta = solved.coord.theta_d;
-                enemy.nominal_state.distance = solved.coord.rho;
-                enemy.nominal_state.armor_yaw = solved.coord.theta_d;
-                enemy.enemy_yaw = solved.coord.theta_d;
-                enemy.enemy_cy = solved.coord.clone();
-                enemy.solved_enemy = solved.clone();
-            } else {
-                // 创建新的enemy
-                self.tracked_enemy = Some(Enemy::new(&self.enemy_id, Some(solved.clone())));
-            }
-            self.tracked_armor = Some(TrackedArmor::new(solved.armors.clone()[0].clone(), 0.0));
-        }
-
-        // 3. 更新状态机
         self.state.update(solved_enemy, cfg);
 
         if matches!(
             self.state,
             EstimatorStateMachine::Init | EstimatorStateMachine::Sleep
         ) {
-            self.tracked_enemy = None;
-            self.tracked_armor = None;
+            self.ypd_angle_tracker.reset();
+            self.latest_tracker_snapshot = None;
         }
 
-        // 4. 设置全局变量
         self.update_global_vars(solved_enemy);
-
-        // 5. 装甲板切换决策
-        let jump = if let Some(enemy) = &self.tracked_enemy {
-            armor_switch_decision(
-                self.tracked_armor
-                    .as_ref()
-                    .map(|a| a.enemy_yaw)
-                    .unwrap_or(0.0),
-                enemy.nominal_state.armor_yaw,
-                enemy.nominal_state.v_spin,
-                0.01, // dt
-            )
-        } else {
-            false
-        };
-
-        // 6. 根据状态更新估计器
-        self.handle_state(cfg, solved_enemy, jump);
+        self.update_tracker(solved_enemy.as_ref(), dt_s);
     }
 
     fn update_global_vars(&mut self, solved_enemy: &Option<RbtSolvedResult>) {
@@ -233,105 +183,125 @@ impl RbtEstimator {
             .unwrap_or(false);
     }
 
-    // 修改：添加jump参数处理装甲板切换
-    pub fn handle_state(
-        &mut self,
-        _cfg: &EstimatorCfg,
-        solved_enemy: &Option<RbtSolvedResult>,
-        _jump: bool,
-    ) {
+    pub fn tracker_snapshot(&self) -> Option<&YpdTrackerSnapshot> {
+        self.latest_tracker_snapshot.as_ref()
+    }
+
+    fn update_dt_s(&mut self) -> f64 {
+        let now = Instant::now();
+        let dt_s = self
+            .last_update_tp
+            .map(|last| now.duration_since(last).as_secs_f64())
+            .unwrap_or(0.01);
+        self.last_update_tp = Some(now);
+        dt_s.clamp(0.001, 0.05)
+    }
+
+    fn update_tracker(&mut self, solved_enemy: Option<&RbtSolvedResult>, dt_s: f64) {
         use EstimatorStateMachine::*;
 
-        info!("State: {}", self.state);
-
         match &self.state {
-            Init | Sleep => {} // 待机状态不处理
-            WakeUp => {
-                // 获得 enemy 的可变引用并初始化状态
-                if let (Some(enemy), Some(solved_enemy)) =
-                    (self.tracked_enemy.as_mut(), solved_enemy)
-                {
-                    enemy.nominal_state.theta = solved_enemy.coord.theta_d;
-                    enemy.nominal_state.distance = solved_enemy.coord.rho;
-                    enemy.enemy_yaw = solved_enemy.coord.theta_d;
-                    enemy.enemy_cy = solved_enemy.coord.clone();
+            Init | Sleep => {}
+            WakeUp | Recovery | Track { .. } => {
+                self.predict_or_reset_tracker(dt_s);
+                if let Some(solved) = solved_enemy {
+                    self.correct_tracker_with_solution(solved);
                 }
+                self.sync_tracker_snapshot();
             }
-            Track { jump: state_jump } => {
-                if let (Some(enemy), Some(_solved_enemy)) =
-                    (self.tracked_enemy.as_mut(), solved_enemy)
-                {
-                    // 先复制armor_layout以避免借用冲突
-                    let armor_layout = enemy.armor_layout.clone();
-
-                    let input = enemy.get_eskf_input();
-                    let measurement = enemy.get_eskf_measurement();
-                    let nominal_state = enemy.get_mut_nominal_state();
-
-                    // 处理装甲板跳变
-                    if *state_jump {
-                        let new_target_yaw = handle_switch(
-                            self.tracked_armor
-                                .as_ref()
-                                .map(|a| a.enemy_yaw)
-                                .unwrap_or(0.0),
-                            &armor_layout,
-                        );
-                        // 更新跟踪装甲板的目标角度
-                        if let Some(armor) = &mut self.tracked_armor {
-                            armor.enemy_yaw = new_target_yaw;
-                        }
-                        // 重置跳变标志
-                        if let Track { jump: jump_flag } = &mut self.state {
-                            *jump_flag = false;
-                        }
-                    }
-
-                    self.eskf
-                        .predict(&self.enemy_model, nominal_state, &input, &self.state);
-                    // 恢复状态增加过程噪声加快收敛
-                    self.eskf.set_r(na::SMatrix::<f64, 4, 4>::identity() * 0.5);
-                    self.eskf
-                        .predict(&self.enemy_model, nominal_state, &input, &self.state);
-                    self.eskf
-                        .update(&self.enemy_model, nominal_state, &measurement, &self.state);
-                    self.eskf.set_r(na::SMatrix::<f64, 4, 4>::identity() * 0.1); // 恢复默认噪声
-                }
-            }
-            Switching => {
-                // 云台移动中，不进行预测和更新
-                // TODO: 实现云台到位检查逻辑
-            }
-            Lost { .. } => {
-                if let Some(_enemy) = self.tracked_enemy.as_mut() {
-                    let enemy = self.tracked_enemy.as_mut().unwrap();
-                    let input = enemy.get_eskf_input();
-                    let nominal_state = enemy.get_mut_nominal_state();
-                    self.eskf
-                        .predict(&self.enemy_model, nominal_state, &input, &self.state);
-                }
-            }
-            Recovery => {
-                if let (Some(_enemy), Some(_solved_enemy)) =
-                    (self.tracked_enemy.as_mut(), solved_enemy)
-                {
-                    let enemy = self.tracked_enemy.as_mut().unwrap();
-                    let input = enemy.get_eskf_input();
-                    let measurement = enemy.get_eskf_measurement();
-                    let nominal_state = enemy.get_mut_nominal_state();
-
-                    // 增加过程噪声以加快收敛
-                    self.eskf.set_r(na::SMatrix::<f64, 4, 4>::identity() * 0.5);
-                    self.eskf
-                        .predict(&self.enemy_model, nominal_state, &input, &self.state);
-                    self.eskf
-                        .update(&self.enemy_model, nominal_state, &measurement, &self.state);
-                    // 恢复默认过程噪声
-                    self.eskf.set_r(na::SMatrix::<f64, 4, 4>::identity() * 0.1);
-                }
+            Lost { .. } | Switching => {
+                self.predict_or_reset_tracker(dt_s);
+                self.sync_tracker_snapshot();
             }
         }
     }
+
+    fn predict_or_reset_tracker(&mut self, dt_s: f64) {
+        if self.ypd_angle_tracker.diverged() || self.ypd_angle_tracker.bad_convergence() {
+            self.ypd_angle_tracker.reset();
+            self.latest_tracker_snapshot = None;
+            return;
+        }
+        self.ypd_angle_tracker.predict(dt_s);
+    }
+
+    fn correct_tracker_with_solution(&mut self, solved: &RbtSolvedResult) {
+        let observations = self.ypd_observations(solved);
+        let Some(preferred_index) = preferred_observation_index(&observations) else {
+            return;
+        };
+        let armor_num = armor_num_for_enemy(self.enemy_id);
+
+        if !self.ypd_angle_tracker.is_initialized() {
+            self.ypd_angle_tracker
+                .init(&observations[preferred_index], armor_num);
+        } else {
+            self.ypd_angle_tracker
+                .update_batch(&observations, Some(preferred_index));
+        }
+    }
+
+    fn sync_tracker_snapshot(&mut self) {
+        self.latest_tracker_snapshot = self.ypd_angle_tracker.snapshot();
+    }
+
+    fn ypd_observations(&self, solved: &RbtSolvedResult) -> Vec<YpdObservation> {
+        let center = solved.coord.to_xy();
+        let armor_num = armor_num_for_enemy(self.enemy_id);
+        let sign = tracker_radial_sign(armor_num);
+
+        solved
+            .armors
+            .iter()
+            .map(|armor| {
+                let position_vec = armor.pose().translation.vector;
+                let position = na::Point3::new(position_vec.x, position_vec.y, position_vec.z);
+                let dx = position.x - center.x;
+                let dy = position.y - center.y;
+                let radius_from_center = dx.hypot(dy);
+                let radius_hint = if armor.radius().is_finite() && armor.radius() > 1e-6 {
+                    armor.radius()
+                } else {
+                    radius_from_center
+                };
+                let yaw_rad = if radius_from_center > 1e-6 {
+                    (dy / sign).atan2(dx / sign)
+                } else {
+                    armor.observed_yaw_rad()
+                };
+                let image_center = armor.center();
+
+                YpdObservation {
+                    position_mm: position,
+                    yaw_rad,
+                    image_center: na::Point2::new(image_center.x, image_center.y),
+                    radius_hint_mm: radius_hint,
+                }
+            })
+            .collect()
+    }
+}
+
+fn armor_num_for_enemy(enemy_id: EnemyId) -> usize {
+    if enemy_id == EnemyId::Outpost8 { 3 } else { 4 }
+}
+
+fn tracker_radial_sign(armor_num: usize) -> f64 {
+    if armor_num == 3 { 1.0 } else { -1.0 }
+}
+
+fn preferred_observation_index(observations: &[YpdObservation]) -> Option<usize> {
+    observations
+        .iter()
+        .enumerate()
+        .min_by(|(_, lhs), (_, rhs)| image_center_score(lhs).total_cmp(&image_center_score(rhs)))
+        .map(|(index, _)| index)
+}
+
+fn image_center_score(observation: &YpdObservation) -> f64 {
+    let dx = observation.image_center.x - 320.0;
+    let dy = observation.image_center.y - 192.0;
+    dx * dx + dy * dy
 }
 
 /// 管理所有敌方单位的估计器。
@@ -379,10 +349,9 @@ impl RbtHandlerPoll {
     pub fn selected_target_snapshot(&self) -> Option<RbtTargetSnapshot> {
         let enemy_id = self.selected_enemy_id()?;
         let estimator = self.estimators.get(&enemy_id)?;
-        let enemy = estimator.tracked_enemy.as_ref()?;
-        let armor = enemy.solved_enemy.armors.first()?;
-        let translation = armor.pose().translation().vector;
-        let target_base_mm = na::Point3::new(translation.x, translation.y, translation.z);
+        let snapshot = estimator.tracker_snapshot()?;
+        let tracked_armor = snapshot.tracked_armor_xyza;
+        let target_base_mm = na::Point3::new(tracked_armor[0], tracked_armor[1], tracked_armor[2]);
 
         if !target_base_mm.coords.iter().all(|value| value.is_finite()) {
             return None;
@@ -474,12 +443,12 @@ enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
         assert_eq!(handler_poll.selected_enemy_id(), Some(EnemyId::Hero1));
         assert!(
             handler_poll.estimators[&EnemyId::Hero1]
-                .tracked_enemy
+                .tracker_snapshot()
                 .is_some()
         );
         assert!(
             handler_poll.estimators[&EnemyId::Infantry3]
-                .tracked_enemy
+                .tracker_snapshot()
                 .is_none()
         );
     }
@@ -507,12 +476,12 @@ enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
         assert_eq!(handler_poll.selected_enemy_id(), Some(EnemyId::Hero1));
         assert!(
             handler_poll.estimators[&EnemyId::Hero1]
-                .tracked_enemy
+                .tracker_snapshot()
                 .is_some()
         );
         assert!(
             handler_poll.estimators[&EnemyId::Infantry3]
-                .tracked_enemy
+                .tracker_snapshot()
                 .is_none()
         );
     }

@@ -16,7 +16,12 @@ impl RbtCylindricalPoint2 {
         let p = xy.into();
         let (x, y) = (p.x, p.y);
         let rho = (x * x + y * y).sqrt();
-        let theta_d = y / x.atan().to_degrees();
+        let theta_d = y.atan2(x).to_degrees();
         Self::new(rho, theta_d)
+    }
+
+    pub fn to_xy(&self) -> na::Point2<f64> {
+        let theta = self.theta_d.to_radians();
+        na::Point2::new(self.rho * theta.cos(), self.rho * theta.sin())
     }
 }
