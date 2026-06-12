@@ -1,6 +1,7 @@
 pub mod rbt_cfg; // 通讯设备接口
 pub mod rbt_log; // log 实现
 pub mod rbt_macro; // 宏实现
+pub mod rbt_ort_ep; // ONNX Runtime EP 选择
 pub mod rbt_queue_async; // 高性能异步队列
 
 pub mod rbt_err; // 错误处理

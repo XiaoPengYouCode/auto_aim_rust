@@ -1,15 +1,16 @@
 use image::{DynamicImage, GenericImageView, ImageReader};
-use log::{error, info};
+use log::info;
 use ndarray as nd;
 use ort::{
-    ep, inputs,
+    inputs,
     session::{Session, SessionOutputs},
     value::TensorRef,
 };
 use std::collections::HashMap;
 
-use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
+use crate::rbt_infra::rbt_err::RbtResult;
 use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
+use crate::rbt_infra::rbt_ort_ep::configure_session_builder;
 pub use crate::rbt_mod::rbt_detector::rbt_yolo::{BBox, YOLO_LABEL_TABLE};
 use crate::rbt_mod::rbt_detector::rbt_yolo::{intersection, union};
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
@@ -162,25 +163,16 @@ impl ArmorDetector {
 pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<HashMap<EnemyId, Vec<DetectedArmor>>> {
     // build session
     let session_builder = Session::builder()?;
-    let mut session = if cfg.ort_ep == "TensorRT" {
-        session_builder.with_execution_providers([ep::TensorRTExecutionProvider::default()
-            .with_engine_cache(true)
-            .with_engine_cache_path(cfg.armor_detect_engine_path.as_str())
-            .with_fp16(true)
-            .build()
-            .error_on_failure()])?
-    } else if cfg.ort_ep == "OpenVINO" {
-        session_builder.with_execution_providers([ep::OpenVINOExecutionProvider::default()
-            .with_device_type("GPU")
-            .build()
-            .error_on_failure()])?
-    } else {
-        error!("Unsupported execution provider: {}", cfg.ort_ep);
-        return Err(RbtError::UnsupportedExecutionProvider(cfg.ort_ep.clone()));
-    }
-    .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
-    .with_inter_threads(16)?
-    .commit_from_file(cfg.armor_detect_model_path.as_str())?;
+    let (session_builder, ort_ep) = configure_session_builder(
+        session_builder,
+        cfg.ort_ep.as_str(),
+        cfg.armor_detect_engine_path.as_str(),
+    )?;
+    info!("using ONNX Runtime execution provider: {}", ort_ep.as_str());
+    let mut session = session_builder
+        .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
+        .with_inter_threads(16)?
+        .commit_from_file(cfg.armor_detect_model_path.as_str())?;
 
     // init armor detector
     let tim = std::time::Instant::now();
