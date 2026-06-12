@@ -26,7 +26,8 @@ tinympc-rs = { git = "https://github.com/3SE-Competitive-Robotics-Team/tinympc-r
 
 # for infer
 ndarray = "0.17.2"
-ort = { version = "2.0.0-rc.12", features = ["tensorrt", "openvino", "coreml"] }
+ort = { version = "2.0.0-rc.12", features = ["tensorrt", "openvino", "coreml", "half"] }
+half = "2.7.1"
 
 # error handle
 thiserror = "2.0.18"

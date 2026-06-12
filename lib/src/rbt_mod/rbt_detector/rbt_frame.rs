@@ -1,7 +1,13 @@
 use tokio::time::Instant;
 
 use crate::rbt_infra::rbt_global::FAILED_COUNT;
+use crate::rbt_mod::rbt_detector::rbt_yolo::LetterboxTransform;
 use log::{debug, error, warn};
+
+pub const ARMOR_INPUT_WIDTH: usize = 640;
+pub const ARMOR_INPUT_HEIGHT: usize = 640;
+pub const ARMOR_OUTPUT_ROWS: usize = 25_200;
+pub const ARMOR_OUTPUT_COLS: usize = 22;
 
 pub struct RbtFrame {
     time: Instant,
@@ -28,8 +34,14 @@ impl RbtFrame {
         Self {
             time: Instant::now(),
             data: RbtFrameData {
-                pre_infer: nd::Array4::<f32>::zeros([1, 3, 384, 640]),
-                infer_post: nd::Array3::<f32>::zeros([5040, 48, 1]),
+                pre_infer: nd::Array4::<half::f16>::zeros([
+                    1,
+                    3,
+                    ARMOR_INPUT_HEIGHT,
+                    ARMOR_INPUT_WIDTH,
+                ]),
+                infer_post: nd::Array2::<f32>::zeros([ARMOR_OUTPUT_ROWS, ARMOR_OUTPUT_COLS]),
+                letterbox: LetterboxTransform::default(),
             },
             id: 0,
             stage: RbtFrameStage::Init,
@@ -52,12 +64,28 @@ impl RbtFrame {
         self.time
     }
 
-    pub fn pre_data(&mut self) -> nd::ArrayViewMut4<'_, f32> {
+    pub fn pre_data(&mut self) -> nd::ArrayViewMut4<'_, half::f16> {
         self.data.pre_infer.view_mut()
     }
 
-    pub fn infer_data(&mut self) -> nd::ArrayViewMut3<'_, f32> {
+    pub fn pre_data_ref(&self) -> nd::ArrayView4<'_, half::f16> {
+        self.data.pre_infer.view()
+    }
+
+    pub fn infer_data(&mut self) -> nd::ArrayViewMut2<'_, f32> {
         self.data.infer_post.view_mut()
+    }
+
+    pub fn infer_data_ref(&self) -> nd::ArrayView2<'_, f32> {
+        self.data.infer_post.view()
+    }
+
+    pub fn set_letterbox_transform(&mut self, transform: LetterboxTransform) {
+        self.data.letterbox = transform;
+    }
+
+    pub fn letterbox_transform(&self) -> LetterboxTransform {
+        self.data.letterbox
     }
 
     pub fn time_used(&self) -> std::time::Duration {
@@ -108,6 +136,7 @@ impl Drop for RbtFrame {
 }
 
 pub struct RbtFrameData {
-    pre_infer: nd::Array4<f32>,
-    infer_post: nd::Array3<f32>,
+    pre_infer: nd::Array4<half::f16>,
+    infer_post: nd::Array2<f32>,
+    letterbox: LetterboxTransform,
 }

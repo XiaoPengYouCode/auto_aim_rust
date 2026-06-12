@@ -1,4 +1,4 @@
-use image::{DynamicImage, GenericImageView, ImageReader};
+use image::{DynamicImage, ImageReader};
 use log::info;
 use ndarray as nd;
 use ort::{
@@ -8,143 +8,76 @@ use ort::{
 };
 use std::collections::HashMap;
 
-use crate::rbt_infra::rbt_err::RbtResult;
+use crate::rbt_infra::rbt_cfg;
+use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 use crate::rbt_infra::rbt_ort_ep::configure_session_builder;
-pub use crate::rbt_mod::rbt_detector::rbt_yolo::{BBox, YOLO_LABEL_TABLE};
-use crate::rbt_mod::rbt_detector::rbt_yolo::{intersection, union};
+use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
+use crate::rbt_mod::rbt_detector::rbt_frame::{
+    ARMOR_INPUT_HEIGHT, ARMOR_INPUT_WIDTH, ARMOR_OUTPUT_COLS, ARMOR_OUTPUT_ROWS,
+};
+pub use crate::rbt_mod::rbt_detector::rbt_yolo::BBox;
+use crate::rbt_mod::rbt_detector::rbt_yolo::{
+    ArmorYoloPostprocessCfg, LetterboxTransform, decode_armor_output, preprocess_letterbox_f16,
+};
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
-use crate::{rbt_infra::rbt_cfg, rbt_mod::rbt_armor::detected_armor::DetectedArmor};
 
 pub mod rbt_frame;
 pub mod rbt_yolo;
 
 pub struct ArmorDetector {
     img: DynamicImage,
-    input: nd::Array<f32, nd::Dim<[usize; 4]>>,
+    input: nd::Array4<half::f16>,
+    letterbox: LetterboxTransform,
 }
 
 impl ArmorDetector {
-    fn init(_cfg: &rbt_cfg::DetectorCfg) -> ArmorDetector {
-        Self {
-            img: ImageReader::open("./imgs/test_resize.jpg")
-                .unwrap()
-                .decode()
-                .unwrap(),
-            input: nd::Array::zeros((1, 3, 384, 640)),
-        }
+    fn init(_cfg: &rbt_cfg::DetectorCfg) -> RbtResult<ArmorDetector> {
+        let img = ImageReader::open("./imgs/test_resize.jpg")?
+            .decode()
+            .map_err(|err| RbtError::StringError(format!("failed to decode test image: {err}")))?;
+
+        Ok(Self {
+            img,
+            input: nd::Array4::zeros((1, 3, ARMOR_INPUT_HEIGHT, ARMOR_INPUT_WIDTH)),
+            letterbox: LetterboxTransform::default(),
+        })
     }
 
-    /// 前处理
-    /// 主要包含：
-    /// 1. 调整图片大小（主要耗时操作）
-    /// 2. 填充灰色
+    /// 前处理：等比例 resize、左上角 letterbox、RGB CHW、归一化到 FP16。
     fn pre_process(&mut self) {
-        // self.img = self.img.resize(640, 360, FilterType::Triangle);
-        let gray = 114.0;
-
-        for pixel in self.img.pixels() {
-            let x = pixel.0 as _;
-            let y = pixel.1 as _;
-            let [r, g, b, _] = pixel.2.0;
-
-            if (12..360).contains(&y) {
-                self.input[[0, 0, y, x]] = r as f32;
-                self.input[[0, 1, y, x]] = g as f32;
-                self.input[[0, 2, y, x]] = b as f32;
-            } else {
-                self.input[[0, 0, y, x]] = gray;
-                self.input[[0, 1, y, x]] = gray;
-                self.input[[0, 2, y, x]] = gray;
-            }
-        }
+        self.letterbox = preprocess_letterbox_f16(self.input.view_mut(), &self.img);
     }
 
-    /// 后处理
-    /// 1. 筛选0.8以上置信度的装甲板
-    /// 2. 利用IOU筛选装甲板
-    /// 3. 统计装甲板信息
-    /// 4. 切片装甲板图片
     pub fn post_process(
         &self,
         outputs: &SessionOutputs,
-    ) -> ort::Result<HashMap<EnemyId, Vec<DetectedArmor>>> {
-        // f32
-        let output = outputs["output0"]
-            .try_extract_array::<f32>()?
-            .t()
-            .into_owned();
+        cfg: &rbt_cfg::DetectorCfg,
+    ) -> RbtResult<HashMap<EnemyId, Vec<DetectedArmor>>> {
+        let output = outputs
+            .get("output")
+            .ok_or_else(|| RbtError::StringError("armor model output `output` not found".into()))?
+            .try_extract_array::<f32>()?;
+        let output = output
+            .as_standard_layout()
+            .to_owned()
+            .into_shape_with_order((ARMOR_OUTPUT_ROWS, ARMOR_OUTPUT_COLS))
+            .map_err(|err| {
+                RbtError::StringError(format!(
+                    "failed to reshape armor output to [{ARMOR_OUTPUT_ROWS},{ARMOR_OUTPUT_COLS}]: {err}"
+                ))
+            })?;
+        let self_fraction = GENERIC_RBT_CFG
+            .read()
+            .ok()
+            .and_then(|cfg| cfg.game_cfg.self_fraction());
+        let post_cfg = ArmorYoloPostprocessCfg::from_armor_cfg(&cfg.armor, self_fraction);
 
-        let mut boxes = Vec::new();
-        let output = output.slice(nd::s![.., .., 0]);
-        for (idx, row) in output.axis_iter(nd::Axis(0)).enumerate() {
-            let row: Vec<_> = row.iter().copied().collect();
-            let (class_id, prob) = row[4..40]
-                .iter()
-                .enumerate()
-                .map(|(index, value)| (index, *value))
-                .reduce(|accum, row| if row.1 > accum.1 { row } else { accum })
-                .unwrap();
-            if prob < 0.8 {
-                continue;
-            }
-            let xc = row[0];
-            let yc = row[1];
-            let w = row[2];
-            let h = row[3];
-
-            let half_w = w / 2.0;
-            let half_h = h / 2.0;
-
-            boxes.push((
-                BBox::new(xc - half_w, yc - half_h, xc + half_w, yc + half_h),
-                class_id,
-                prob,
-                idx,
-            ));
-        }
-
-        // 非极大值抑制
-        // 作用是寻找最准确的目标检测框
-        boxes.sort_by(|box1, box2| box2.2.total_cmp(&box1.2));
-        let mut result = Vec::new();
-        while !boxes.is_empty() {
-            result.push(boxes[0]);
-            boxes = boxes
-                .iter()
-                .filter(|box1| {
-                    intersection(&boxes[0].0, &box1.0) / union(&boxes[0].0, &box1.0) < 0.7
-                })
-                .copied()
-                .collect();
-        }
-
-        // 收集结果
-        let mut armors = HashMap::with_capacity(6);
-
-        let mut idx_id = 0usize;
-        for (_, class_id, _, idx) in result {
-            let armor_label = &YOLO_LABEL_TABLE[class_id];
-            if armor_label.color()
-                == &GENERIC_RBT_CFG
-                    .read()
-                    .unwrap()
-                    .game_cfg
-                    .self_fraction()
-                    .unwrap()
-            {
-                continue;
-            }
-            let armor_id = *armor_label.id();
-            let corner_coords = yolo_output_corner_coords(&output, idx);
-            let detected_armor = DetectedArmor::from_corner_coords(&corner_coords, idx_id);
-            armors
-                .entry(armor_id)
-                .or_insert(Vec::new())
-                .push(detected_armor);
-            idx_id += 1; // 用于辨识帧画面所有装甲板的唯一id
-        }
-        Ok(armors)
+        Ok(decode_armor_output(
+            &output.view(),
+            self.letterbox,
+            &post_cfg,
+        ))
     }
 }
 
@@ -161,76 +94,35 @@ impl ArmorDetector {
 /// CUDA 12.6: FP16 5ms
 /// TensorRT 10: FP16 2.5ms
 pub fn pipeline(cfg: &rbt_cfg::DetectorCfg) -> RbtResult<HashMap<EnemyId, Vec<DetectedArmor>>> {
-    // build session
     let session_builder = Session::builder()?;
     let (session_builder, ort_ep) = configure_session_builder(
         session_builder,
         cfg.ort_ep.as_str(),
-        cfg.armor_detect_engine_path.as_str(),
+        cfg.armor.engine_path.as_str(),
     )?;
     info!("using ONNX Runtime execution provider: {}", ort_ep.as_str());
     let mut session = session_builder
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
         .with_inter_threads(16)?
-        .commit_from_file(cfg.armor_detect_model_path.as_str())?;
+        .commit_from_file(cfg.armor.model_path.as_str())?;
 
-    // init armor detector
     let tim = std::time::Instant::now();
-    let mut detector = ArmorDetector::init(cfg);
+    let mut detector = ArmorDetector::init(cfg)?;
     let elapsed = tim.elapsed();
     info!("Initialization time elapsed: {:?}", elapsed);
 
-    // preprocessing
     detector.pre_process();
 
-    // inference
     let tim2 = std::time::Instant::now();
-    let outputs: SessionOutputs<'_> = session.run(inputs![
-        TensorRef::from_array_view(&detector.input).unwrap()
-    ])?;
+    let outputs: SessionOutputs<'_> =
+        session.run(inputs![TensorRef::from_array_view(detector.input.view())?])?;
     let elapsed = tim2.elapsed();
     info!("Inference time elapsed: {:?}", elapsed);
 
-    // postprocessing
     let tim = std::time::Instant::now();
-    let result = detector.post_process(&outputs)?;
+    let result = detector.post_process(&outputs, cfg)?;
     let elapsed = tim.elapsed();
     info!("Postprocessing time elapsed: {:?}", elapsed);
 
     Ok(result)
-}
-
-fn yolo_output_corner_coords(output: &nd::ArrayView2<'_, f32>, idx: usize) -> [f32; 10] {
-    [
-        output[[idx, 0]],
-        output[[idx, 1]],
-        output[[idx, 40]],
-        output[[idx, 41]],
-        output[[idx, 42]],
-        output[[idx, 43]],
-        output[[idx, 44]],
-        output[[idx, 45]],
-        output[[idx, 46]],
-        output[[idx, 47]],
-    ]
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn maps_yolo_pose_output_keypoints_to_detected_armor_coords() {
-        let mut output = nd::Array2::<f32>::zeros((1, 48));
-        for col in [0, 1, 40, 41, 42, 43, 44, 45, 46, 47] {
-            output[[0, col]] = col as f32;
-        }
-
-        let output = output.view();
-
-        assert_eq!(
-            yolo_output_corner_coords(&output, 0),
-            [0.0, 1.0, 40.0, 41.0, 42.0, 43.0, 44.0, 45.0, 46.0, 47.0]
-        );
-    }
 }

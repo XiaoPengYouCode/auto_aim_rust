@@ -12,4 +12,5 @@ ort = { workspace = true }
 rerun = { workspace = true }
 image = { workspace = true }
 ndarray = { workspace = true }
+half = { workspace = true }
 log = { workspace = true }

@@ -55,16 +55,30 @@ pub struct GeneralCfg {
 // 检测器相关配置
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct DetectorCfg {
-    pub armor_detect_model_path: String,
-    pub armor_detect_engine_path: String,
-    pub buff_detect_model_path: String,
     pub camera_img_width: u64,
     pub camera_img_height: u64,
     pub infer_img_width: u64,
     pub infer_img_height: u64,
-    pub infer_full_height: u64,
-    pub confidence_threshold: f32,
     pub ort_ep: String,
+    pub armor: ArmorDetectorCfg,
+    pub energy_mechanism: EnergyMechanismDetectorCfg,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct ArmorDetectorCfg {
+    pub model_path: String,
+    pub engine_path: String,
+    pub score_threshold: f32,
+    pub confidence_threshold: f32,
+    pub nms_iou_threshold: f32,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct EnergyMechanismDetectorCfg {
+    pub model_path: String,
+    pub engine_path: String,
+    pub confidence_threshold: f32,
+    pub nms_iou_threshold: f32,
 }
 
 /// 相机相关配置

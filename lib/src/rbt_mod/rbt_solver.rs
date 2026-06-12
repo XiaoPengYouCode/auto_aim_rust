@@ -8,7 +8,7 @@ use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
 use crate::rbt_mod::rbt_armor::solved_armor::SolvedArmor;
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
-use log::{error, info, warn};
+use log::{debug, error, warn};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
@@ -141,34 +141,29 @@ pub fn enemys_solver(
             solved_armor.update_measurement(radius);
         }
 
-        // 1.6 可视化
-        rec.log(
-            "world/base_link",
-            &[
-                &rerun::Transform3D::default() as &dyn rerun::AsComponents,
-                &rerun::TransformAxes3D::new(300.0),
-            ],
-        )?;
-        rec.log(
-            "world/enemy_link",
-            &[
-                &rerun::Transform3D::default().with_translation([
-                    enemy_center_xy.x as f32,
-                    enemy_center_xy.y as f32,
-                    0.0f32,
-                ]) as &dyn rerun::AsComponents,
-                &rerun::TransformAxes3D::new(300.0),
-            ],
-        )?;
-        for (idx, armor_pose) in enemy_solved_armors.iter().enumerate() {
-            armor_pose.pose().armor_visualize(rec, idx)?
+        if rec.is_enabled() {
+            rec.log(
+                "world/base_link",
+                &[
+                    &rerun::Transform3D::default() as &dyn rerun::AsComponents,
+                    &rerun::TransformAxes3D::new(300.0),
+                ],
+            )?;
+            rec.log(
+                "world/enemy_link",
+                &[
+                    &rerun::Transform3D::default().with_translation([
+                        enemy_center_xy.x as f32,
+                        enemy_center_xy.y as f32,
+                        0.0f32,
+                    ]) as &dyn rerun::AsComponents,
+                    &rerun::TransformAxes3D::new(300.0),
+                ],
+            )?;
+            for (idx, armor_pose) in enemy_solved_armors.iter().enumerate() {
+                armor_pose.pose().armor_visualize(rec, idx)?
+            }
         }
-
-        let image =
-            image::open("/home/flamingo/Project/robomaster/auto_aim_rust/imgs/test_resize.jpg")
-                .unwrap();
-        rec.log("world/image", &rerun::Image::from_image(image).unwrap())
-            .expect("failed to show img in rerun");
 
         // 1.7 写入该敌方单位输出结果
         let solved_result = RbtSolvedResult {
@@ -179,7 +174,7 @@ pub fn enemys_solver(
             .entry(enemy_id)
             .and_modify(|result| *result = Some(solved_result));
 
-        info!("App finished successfully");
+        debug!("enemys_solver: solved enemy {enemy_id:?}");
     }
 
     Ok(enemys)
@@ -204,8 +199,6 @@ fn solve_enemy_center(armors_line_2d: &[RbtLine2]) -> Option<na::Point2<f64>> {
 /// 使用估计出的半径进行中心求解
 fn handle_single_armor(armors_line_2d: &RbtLine2) -> na::Point2<f64> {
     let r = 200.0;
-    dbg!(&armors_line_2d);
-    dbg!(armors_line_2d.point - armors_line_2d.direction * r);
     armors_line_2d.point - armors_line_2d.direction * r
 }
 

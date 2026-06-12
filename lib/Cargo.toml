@@ -11,6 +11,7 @@ tinympc-rs = { workspace = true }
 
 ndarray = { workspace = true }
 ort = { workspace = true }
+half = { workspace = true }
 
 thiserror = { workspace = true }
 
