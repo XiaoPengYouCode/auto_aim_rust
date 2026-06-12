@@ -9,12 +9,12 @@ use auto_aim_rust::rbt_infra::rbt_log;
 use lib as auto_aim_rust;
 use lib::rbt_infra::rbt_err::{RbtError, RbtResult};
 use lib::rbt_infra::rbt_global::GENERIC_RBT_CFG;
+use lib::rbt_infra::rbt_ort_ep::configure_session_builder;
 use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
 use lib::rbt_mod::rbt_comm::rbt_comm_frame::SensData;
 use lib::rbt_mod::rbt_detector::rbt_frame::RbtFrame;
 use lib::rbt_mod::rbt_solver::RbtSolvedResults;
-use log::{info, warn};
-use ort::ep;
+use log::info;
 use ort::session::Session;
 use std::path::Path;
 use std::sync::Arc;
@@ -57,27 +57,12 @@ async fn main() -> RbtResult<()> {
 
     // build onnxruntime session
     let session_builder = Session::builder()?;
-    let session_builder = match cfg.detector_cfg.ort_ep.as_str() {
-        "OpenVINO" => {
-            session_builder.with_execution_providers([ep::OpenVINOExecutionProvider::default()
-                .with_device_type("GPU")
-                .build()])?
-        }
-        "TensorRT" => {
-            session_builder.with_execution_providers([ep::TensorRTExecutionProvider::default()
-                .with_engine_cache(true)
-                .with_engine_cache_path(cfg.detector_cfg.armor_detect_engine_path.as_str())
-                .with_fp16(true)
-                .build()])?
-        }
-        "CPU" => session_builder.with_execution_providers([ep::CPUExecutionProvider::default()
-            .with_arena_allocator(true)
-            .build()])?,
-        other => {
-            warn!("unsupported ort_ep `{other}`, falling back to CPU");
-            session_builder
-        }
-    };
+    let (session_builder, ort_ep) = configure_session_builder(
+        session_builder,
+        cfg.detector_cfg.ort_ep.as_str(),
+        cfg.detector_cfg.armor_detect_engine_path.as_str(),
+    )?;
+    info!("using ONNX Runtime execution provider: {}", ort_ep.as_str());
     let session = session_builder
         .with_optimization_level(ort::session::builder::GraphOptimizationLevel::Level3)?
         .with_inter_threads(8)?

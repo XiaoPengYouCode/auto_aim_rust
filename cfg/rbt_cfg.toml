@@ -28,7 +28,8 @@ infer_img_width = 640
 infer_img_height = 360
 infer_full_height = 480
 confidence_threshold = 0.8
-ort_ep = "OpenVINO"
+# auto: macOS -> CoreML, x86_64 Linux/Windows -> OpenVINO, other targets -> CPU.
+ort_ep = "auto"
 
 [cam_cfg]
 cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]
