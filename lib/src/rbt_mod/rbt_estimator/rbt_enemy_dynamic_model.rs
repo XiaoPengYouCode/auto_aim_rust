@@ -37,7 +37,7 @@ pub enum EnemyId {
 }
 
 /// 描述敌方阵营
-#[derive(PartialEq, Eq, strum::Display)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, strum::Display)]
 pub enum EnemyFaction {
     R,
     B,

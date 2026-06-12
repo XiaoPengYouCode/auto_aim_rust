@@ -5,3 +5,5 @@
 /log/*
 /rerun-log
 .venv
+/video/
+/videos/

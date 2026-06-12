@@ -834,6 +834,7 @@ dependencies = [
 name = "auto_aim_async"
 version = "0.1.0"
 dependencies = [
+ "half",
  "image",
  "lib",
  "log",
@@ -4825,6 +4826,7 @@ name = "lib"
 version = "0.1.0"
 dependencies = [
  "crossbeam-queue",
+ "half",
  "image",
  "imageproc",
  "jiff",
@@ -6299,6 +6301,7 @@ version = "2.0.0-rc.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
 dependencies = [
+ "half",
  "ndarray 0.17.2",
  "ort-sys",
  "smallvec",

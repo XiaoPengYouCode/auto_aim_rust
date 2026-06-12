@@ -18,18 +18,26 @@ img_dbg = false
 bullet_speed = 24.0
 
 [detector_cfg]
-# 神经网络模型分别放在 model/armor 和 model/buff 目录下
-armor_detect_model_path = "./model/armor/best_fp16_norm.onnx"
-armor_detect_engine_path = "./model/armor"
-buff_detect_model_path = "./model/buff/buff.onnx"
+# 神经网络模型分别放在 model/armor 和 model/engine_mechanism 目录下
 camera_img_width = 1280
 camera_img_height = 720
 infer_img_width = 640
-infer_img_height = 360
-infer_full_height = 480
-confidence_threshold = 0.8
+infer_img_height = 640
 # auto: macOS -> CoreML, x86_64 Linux/Windows -> OpenVINO, other targets -> CPU.
 ort_ep = "auto"
+
+[detector_cfg.armor]
+model_path = "./model/armor/Armor.onnx"
+engine_path = "./model/armor"
+score_threshold = 0.5
+confidence_threshold = 0.5
+nms_iou_threshold = 0.45
+
+[detector_cfg.energy_mechanism]
+model_path = "./model/engine_mechanism/EngineMechanism.onnx"
+engine_path = "./model/engine_mechanism"
+confidence_threshold = 0.8
+nms_iou_threshold = 0.4
 
 [cam_cfg]
 cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]

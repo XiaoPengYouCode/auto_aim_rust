@@ -1,37 +1,38 @@
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use ort::inputs;
 use ort::value::TensorRef;
-use std::collections::HashMap;
+use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant as StdInstant};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
 // use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
-use lib::rbt_mod::rbt_solver::RbtSolvedResults;
+use lib::rbt_mod::{rbt_estimator::rbt_enemy_dynamic_model::EnemyId, rbt_solver::RbtSolvedResults};
 use lib::{
-    rbt_base::rbt_geometry::rbt_point2::RbtImgPoint2,
-    rbt_infra::rbt_cfg::RbtCfg,
+    rbt_infra::rbt_cfg::{DetectorCfg, RbtCfg},
     rbt_infra::{
         rbt_global::{GENERIC_RBT_CFG, IS_RUNNING},
         rbt_queue_async::RbtSPSCQueueAsync,
     },
     rbt_mod::{
-        rbt_armor::detected_armor::DetectedArmor,
         rbt_comm::rbt_comm_frame::{
             AimingState, CAN_FRAME_SIZE, CONTROL_LOOP_PERIOD_MS, CtrlData,
             DEFAULT_BULLET_SPEED_MPS, FEEDBACK_STALE_TIMEOUT_MS, SelfFraction, SensData,
             ShotBuffMode, ShotMode, TaskMode,
         },
         rbt_detector::{
-            BBox,
-            rbt_frame::{RbtFrame, RbtFrameStage},
-            rbt_yolo::{YOLO_LABEL_TABLE, letterbox, nms},
+            rbt_frame::{ARMOR_OUTPUT_COLS, ARMOR_OUTPUT_ROWS, RbtFrame, RbtFrameStage},
+            rbt_yolo::{
+                ArmorYoloDecodeStats, ArmorYoloPostprocessCfg, decode_armor_output_with_stats,
+                preprocess_letterbox_f16,
+            },
         },
-        rbt_estimator::rbt_enemy_dynamic_model::EnemyId,
         rbt_estimator::{EnemyTrackSnapshot, RbtHandlerPoll},
         rbt_fire_control::{
             FireGateConfig, PlannerTarget, SecondOrderPositionMpc, SecondOrderPositionMpcConfig,
@@ -41,10 +42,18 @@ use lib::{
     },
 };
 
-const STATIC_IMAGE_FRAME_PERIOD_MS: u64 = 16;
+const DEFAULT_VIDEO_FRAME_PERIOD_MS: u64 = 0;
+const DEFAULT_VIDEO_FILE: &str = "offline_capture_bundle_outpost_rot180.avi";
+const RAW_RGB_CHANNELS: usize = 3;
 const FIRE_CONTROL_SNAPSHOT_STALE_MS: f64 = 180.0;
 const CONTROL_STATUS_LOG_PERIOD_TICKS: u64 = 50;
 const PIPELINE_POP_TIMEOUT_MS: u64 = 100;
+const RERUN_FILTER_RAW_CENTER_COLOR: u32 = 0xFFBE14FF;
+const RERUN_FILTER_RAW_ARMOR_COLOR: u32 = 0xFF5014FF;
+const RERUN_FILTER_FILTERED_CENTER_COLOR: u32 = 0x14DC78FF;
+const RERUN_FILTER_FILTERED_ARMOR_COLOR: u32 = 0x288CFFFF;
+const RERUN_FILTER_VELOCITY_COLOR: u32 = 0xFFFFFFFF;
+const RERUN_FILTER_VELOCITY_ARROW_SCALE_S: f64 = 0.2;
 
 #[derive(Debug, Clone)]
 pub struct PlannerTrackSnapshot {
@@ -53,12 +62,255 @@ pub struct PlannerTrackSnapshot {
     publish_tp: Instant,
 }
 
-pub fn static_image_path() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("..")
-        .join("imgs")
-        .join("test_resize.jpg")
+#[derive(Debug, Clone, Copy, Default)]
+struct PreprocessSummary {
+    frames: u64,
+    read_total: Duration,
+    preprocess_total: Duration,
+    elapsed: Duration,
+}
+
+impl PreprocessSummary {
+    fn avg_read(self) -> Duration {
+        avg_duration(self.read_total, self.frames)
+    }
+
+    fn avg_preprocess(self) -> Duration {
+        avg_duration(self.preprocess_total, self.frames)
+    }
+}
+
+fn avg_duration(total: Duration, count: u64) -> Duration {
+    if count == 0 {
+        Duration::ZERO
+    } else {
+        total / count as u32
+    }
+}
+
+fn enemy_rerun_name(enemy_id: EnemyId) -> &'static str {
+    match enemy_id {
+        EnemyId::Hero1 => "hero1",
+        EnemyId::Engineer2 => "engineer2",
+        EnemyId::Infantry3 => "infantry3",
+        EnemyId::Infantry4 => "infantry4",
+        EnemyId::Sentry7 => "sentry7",
+        EnemyId::Outpost8 => "outpost8",
+        EnemyId::Invalid => "invalid",
+    }
+}
+
+fn solved_enemy_center_position(enemy: &lib::rbt_mod::rbt_solver::RbtSolvedResult) -> [f32; 3] {
+    let center = enemy.coord.to_xy();
+    let armor_z = enemy
+        .armors
+        .first()
+        .map(|armor| armor.pose().translation.vector.z)
+        .unwrap_or(0.0);
+    [center.x as f32, center.y as f32, armor_z as f32]
+}
+
+fn solved_enemy_armor_positions(
+    enemy: &lib::rbt_mod::rbt_solver::RbtSolvedResult,
+) -> Vec<[f32; 3]> {
+    enemy
+        .armors
+        .iter()
+        .map(|armor| {
+            let translation = armor.pose().translation.vector;
+            [
+                translation.x as f32,
+                translation.y as f32,
+                translation.z as f32,
+            ]
+        })
+        .collect()
+}
+
+fn filtered_center_position(snapshot: EnemyTrackSnapshot) -> [f32; 3] {
+    [
+        (snapshot.center_xy_m.x * 1_000.0) as f32,
+        (snapshot.center_xy_m.y * 1_000.0) as f32,
+        (snapshot.armor_z_m * 1_000.0) as f32,
+    ]
+}
+
+fn filtered_velocity_arrow(snapshot: EnemyTrackSnapshot) -> [f32; 3] {
+    [
+        (snapshot.center_velocity_xy_mps.x * 1_000.0 * RERUN_FILTER_VELOCITY_ARROW_SCALE_S) as f32,
+        (snapshot.center_velocity_xy_mps.y * 1_000.0 * RERUN_FILTER_VELOCITY_ARROW_SCALE_S) as f32,
+        (snapshot.armor_z_velocity_mps * 1_000.0 * RERUN_FILTER_VELOCITY_ARROW_SCALE_S) as f32,
+    ]
+}
+
+fn filtered_armor_positions(snapshot: EnemyTrackSnapshot) -> Vec<[f32; 3]> {
+    let center_x_mm = snapshot.center_xy_m.x * 1_000.0;
+    let center_y_mm = snapshot.center_xy_m.y * 1_000.0;
+    let z_mm = snapshot.armor_z_m * 1_000.0;
+    let primary_radius_mm = snapshot.primary_radius_m * 1_000.0;
+    let secondary_radius_mm =
+        (snapshot.primary_radius_m + snapshot.secondary_radius_delta_m) * 1_000.0;
+    let height_delta_mm = snapshot.height_delta_m * 1_000.0;
+    let armor_count = snapshot.armor_count.clamp(1, 4);
+    let radial_sign = if armor_count == 3 { 1.0 } else { -1.0 };
+
+    (0..armor_count)
+        .map(|idx| {
+            let angle =
+                snapshot.body_yaw_rad + idx as f64 * std::f64::consts::TAU / armor_count as f64;
+            let radius_mm = if armor_count == 4 && (idx == 1 || idx == 3) {
+                secondary_radius_mm
+            } else {
+                primary_radius_mm
+            };
+            let z_offset_mm = if armor_count == 4 {
+                if idx == 1 || idx == 3 {
+                    height_delta_mm
+                } else {
+                    0.0
+                }
+            } else if idx == 1 {
+                snapshot.secondary_radius_delta_m * 1_000.0
+            } else if idx == 2 {
+                height_delta_mm
+            } else {
+                0.0
+            };
+
+            [
+                (center_x_mm + radial_sign * radius_mm * angle.cos()) as f32,
+                (center_y_mm + radial_sign * radius_mm * angle.sin()) as f32,
+                (z_mm + z_offset_mm) as f32,
+            ]
+        })
+        .collect()
+}
+
+fn log_rerun_filter_snapshot(
+    rec: &rr::RecordingStream,
+    seq: u64,
+    raw_enemies: &RbtSolvedResults,
+    filtered: Option<EnemyTrackSnapshot>,
+    raw_visible: &mut bool,
+    filtered_visible: &mut bool,
+) -> Result<(), rr::RecordingStreamError> {
+    if !rec.is_enabled() {
+        return Ok(());
+    }
+
+    rec.set_time_sequence("estimate_seq", seq as i64);
+
+    let mut raw_centers = Vec::new();
+    let mut raw_armors = Vec::new();
+    let mut raw_labels = Vec::new();
+    for (enemy_id, enemy) in raw_enemies.iter() {
+        let Some(enemy) = enemy else {
+            continue;
+        };
+        raw_centers.push(solved_enemy_center_position(enemy));
+        raw_labels.push(enemy_rerun_name(*enemy_id));
+        raw_armors.extend(solved_enemy_armor_positions(enemy));
+    }
+
+    if raw_centers.is_empty() {
+        if *raw_visible {
+            rec.log(
+                "world/filter/raw/centers",
+                &rr::Points3D::new([] as [[f32; 3]; 0]),
+            )?;
+            rec.log(
+                "world/filter/raw/armors",
+                &rr::Points3D::new([] as [[f32; 3]; 0]),
+            )?;
+            *raw_visible = false;
+        }
+    } else {
+        rec.log(
+            "world/filter/raw/centers",
+            &rr::Points3D::new(raw_centers)
+                .with_colors([RERUN_FILTER_RAW_CENTER_COLOR])
+                .with_radii([24.0])
+                .with_labels(raw_labels),
+        )?;
+        rec.log(
+            "world/filter/raw/armors",
+            &rr::Points3D::new(raw_armors)
+                .with_colors([RERUN_FILTER_RAW_ARMOR_COLOR])
+                .with_radii([12.0]),
+        )?;
+        *raw_visible = true;
+    }
+
+    if let Some(snapshot) = filtered {
+        let center = filtered_center_position(snapshot);
+        let velocity = filtered_velocity_arrow(snapshot);
+        rec.log(
+            "world/filter/filtered/center",
+            &rr::Points3D::new([center])
+                .with_colors([RERUN_FILTER_FILTERED_CENTER_COLOR])
+                .with_radii([30.0])
+                .with_labels([enemy_rerun_name(snapshot.enemy_id)]),
+        )?;
+        rec.log(
+            "world/filter/filtered/armors",
+            &rr::Points3D::new(filtered_armor_positions(snapshot))
+                .with_colors([RERUN_FILTER_FILTERED_ARMOR_COLOR])
+                .with_radii([14.0]),
+        )?;
+        rec.log(
+            "world/filter/filtered/velocity",
+            &rr::Arrows3D::from_vectors([velocity])
+                .with_origins([center])
+                .with_colors([RERUN_FILTER_VELOCITY_COLOR])
+                .with_radii([4.0]),
+        )?;
+        *filtered_visible = true;
+    } else {
+        if *filtered_visible {
+            rec.log(
+                "world/filter/filtered/center",
+                &rr::Points3D::new([] as [[f32; 3]; 0]),
+            )?;
+            rec.log(
+                "world/filter/filtered/armors",
+                &rr::Points3D::new([] as [[f32; 3]; 0]),
+            )?;
+            rec.log(
+                "world/filter/filtered/velocity",
+                &rr::Arrows3D::from_vectors([] as [[f32; 3]; 0]),
+            )?;
+            *filtered_visible = false;
+        }
+    }
+
+    Ok(())
+}
+
+pub fn video_input_path() -> PathBuf {
+    std::env::var_os("AUTO_AIM_VIDEO_PATH")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("..")
+                .join("..")
+                .join("videos")
+                .join(DEFAULT_VIDEO_FILE)
+        })
+}
+
+fn configured_video_frame_period() -> Duration {
+    let millis = std::env::var("AUTO_AIM_VIDEO_FRAME_PERIOD_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_VIDEO_FRAME_PERIOD_MS);
+    Duration::from_millis(millis)
+}
+
+fn configured_max_video_frames() -> Option<u64> {
+    std::env::var("AUTO_AIM_MAX_FRAMES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
 }
 
 fn default_feedback(bullet_speed_mps: f64) -> SensData {
@@ -90,59 +342,243 @@ fn hold_current_gimbal_control(feedback: SensData) -> CtrlData {
     }
 }
 
-/// 图像预处理阶段：读取图像并通过通道发送到下一阶段。
-/// 此函数负责读取图像、调整图像大小、转换为归一化格式，并为推理阶段准备数据。
-pub fn pre_process(queue: Arc<RbtSPSCQueueAsync<RbtFrame>>) -> JoinHandle<()> {
+/// 视频预处理阶段：读取原始视频帧，再 resize + letterbox 到模型输入张量。
+pub fn pre_process(
+    queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+    detector_cfg: DetectorCfg,
+) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let input_template = match tokio::task::spawn_blocking(|| {
-            let image_path = static_image_path();
-            let resized_img = image::open(&image_path)
-                .map_err(|err| format!("failed to open {}: {err}", image_path.display()))?;
-            let mut input_array = nd::Array4::zeros((1, 3, 384, 640));
-            letterbox(&mut input_array, &resized_img);
-            Ok::<_, String>(input_array)
-        })
-        .await
-        {
-            Ok(Ok(input_template)) => input_template,
+        let result =
+            tokio::task::spawn_blocking(move || run_video_preprocess_loop(queue, detector_cfg))
+                .await;
+
+        match result {
+            Ok(Ok(summary)) => {
+                info!(
+                    "pre_process: video source finished after {} frames in {:?}, avg read {:?}, avg preprocess {:?}",
+                    summary.frames,
+                    summary.elapsed,
+                    summary.avg_read(),
+                    summary.avg_preprocess()
+                );
+                IS_RUNNING.store(false, Ordering::SeqCst);
+            }
+            Err(err) => {
+                error!("pre_process: video worker join failed: {err}");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+            }
             Ok(Err(err)) => {
                 error!("pre_process: {err}");
                 IS_RUNNING.store(false, Ordering::SeqCst);
-                return;
-            }
-            Err(err) => {
-                error!("pre_process: failed to prepare static image: {err}");
-                IS_RUNNING.store(false, Ordering::SeqCst);
-                return;
-            }
-        };
-
-        info!(
-            "pre_process: loaded static image {}",
-            static_image_path().display()
-        );
-
-        let mut frame_id = 0_u64;
-        let mut ticker = tokio::time::interval(Duration::from_millis(STATIC_IMAGE_FRAME_PERIOD_MS));
-        loop {
-            ticker.tick().await;
-            if !IS_RUNNING.load(Ordering::SeqCst) {
-                info!("pre_process: Stopping processing as IS_RUNNING is false");
-                break;
-            }
-
-            frame_id = frame_id.wrapping_add(1);
-            let mut rbt_frame = RbtFrame::new();
-            rbt_frame.pre_data().assign(&input_template.view());
-            rbt_frame.set_id(frame_id);
-            rbt_frame.set_state(RbtFrameStage::Pre);
-            queue.push_latest(rbt_frame);
-
-            if frame_id == 1 || frame_id.is_multiple_of(60) {
-                info!("pre_process: replayed static frame {}", frame_id);
             }
         }
     })
+}
+
+fn run_video_preprocess_loop(
+    queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+    _detector_cfg: DetectorCfg,
+) -> Result<PreprocessSummary, String> {
+    let video_path = video_input_path();
+    let frame_period = configured_video_frame_period();
+    let max_frames = configured_max_video_frames();
+    let mut reader = FfmpegVideoReader::open(&video_path)?;
+    let mut frame_id = 0_u64;
+    let mut summary = PreprocessSummary::default();
+    let started = StdInstant::now();
+
+    info!(
+        "pre_process: streaming {} as original {}x{} rgb frames, frame_period={:?}, max_frames={:?}",
+        video_path.display(),
+        reader.width,
+        reader.height,
+        frame_period,
+        max_frames
+    );
+
+    loop {
+        if !IS_RUNNING.load(Ordering::SeqCst) {
+            info!("pre_process: stopping video source as IS_RUNNING is false");
+            break;
+        }
+
+        let read_started = StdInstant::now();
+        let Some(frame_img) = reader.read_frame()? else {
+            break;
+        };
+        summary.read_total += read_started.elapsed();
+
+        frame_id = frame_id.wrapping_add(1);
+        let mut rbt_frame = RbtFrame::new();
+        let preprocess_started = StdInstant::now();
+        let transform = preprocess_letterbox_f16(rbt_frame.pre_data(), &frame_img);
+        summary.preprocess_total += preprocess_started.elapsed();
+        rbt_frame.set_letterbox_transform(transform);
+        rbt_frame.set_id(frame_id);
+        rbt_frame.set_state(RbtFrameStage::Pre);
+        queue.push_latest(rbt_frame);
+
+        if frame_id == 1 || frame_id.is_multiple_of(60) {
+            info!("pre_process: pushed video frame {frame_id}");
+        }
+
+        if max_frames.is_some_and(|max_frames| frame_id >= max_frames) {
+            info!("pre_process: reached AUTO_AIM_MAX_FRAMES={frame_id}");
+            break;
+        }
+
+        if !frame_period.is_zero() {
+            thread::sleep(frame_period);
+        }
+    }
+
+    summary.frames = frame_id;
+    summary.elapsed = started.elapsed();
+    Ok(summary)
+}
+
+struct FfmpegVideoReader {
+    child: Child,
+    stdout: ChildStdout,
+    frame_buf: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
+impl FfmpegVideoReader {
+    fn open(path: &Path) -> Result<Self, String> {
+        let (width, height) = probe_video_size(path)?;
+        let mut child = Command::new("ffmpeg")
+            .arg("-hide_banner")
+            .arg("-loglevel")
+            .arg("error")
+            .arg("-i")
+            .arg(path)
+            .arg("-an")
+            .arg("-f")
+            .arg("rawvideo")
+            .arg("-pix_fmt")
+            .arg("rgb24")
+            .arg("pipe:1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|err| format!("failed to start ffmpeg for {}: {err}", path.display()))?;
+
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| "failed to capture ffmpeg stdout".to_string())?;
+        let frame_len = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(RAW_RGB_CHANNELS))
+            .ok_or_else(|| format!("raw frame size overflows usize: {width}x{height}"))?;
+
+        Ok(Self {
+            child,
+            stdout,
+            frame_buf: vec![0; frame_len],
+            width,
+            height,
+        })
+    }
+
+    fn read_frame(&mut self) -> Result<Option<image::DynamicImage>, String> {
+        let mut read_len = 0;
+        while read_len < self.frame_buf.len() {
+            let n = self
+                .stdout
+                .read(&mut self.frame_buf[read_len..])
+                .map_err(|err| {
+                    format!(
+                        "failed to read ffmpeg raw frame {}x{}: {err}",
+                        self.width, self.height
+                    )
+                })?;
+            if n == 0 {
+                if read_len == 0 {
+                    return Ok(None);
+                }
+                return Err(format!(
+                    "ffmpeg ended in the middle of a frame: read {read_len}/{} bytes",
+                    self.frame_buf.len()
+                ));
+            }
+            read_len += n;
+        }
+
+        let image = image::RgbImage::from_raw(self.width, self.height, self.frame_buf.clone())
+            .ok_or_else(|| {
+                format!(
+                    "failed to build rgb image from raw frame {}x{}",
+                    self.width, self.height
+                )
+            })?;
+
+        Ok(Some(image::DynamicImage::ImageRgb8(image)))
+    }
+}
+
+fn probe_video_size(path: &Path) -> Result<(u32, u32), String> {
+    let output = Command::new("ffprobe")
+        .arg("-v")
+        .arg("error")
+        .arg("-select_streams")
+        .arg("v:0")
+        .arg("-show_entries")
+        .arg("stream=width,height")
+        .arg("-of")
+        .arg("csv=p=0:s=x")
+        .arg(path)
+        .output()
+        .map_err(|err| format!("failed to start ffprobe for {}: {err}", path.display()))?;
+
+    if !output.status.success() {
+        return Err(format!(
+            "ffprobe failed for {}: {}",
+            path.display(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let size = stdout
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .ok_or_else(|| format!("ffprobe did not report video size for {}", path.display()))?
+        .trim();
+    let (width, height) = size.split_once('x').ok_or_else(|| {
+        format!(
+            "unexpected ffprobe video size `{size}` for {}",
+            path.display()
+        )
+    })?;
+    let width = width
+        .parse::<u32>()
+        .map_err(|err| format!("invalid ffprobe width `{width}`: {err}"))?;
+    let height = height
+        .parse::<u32>()
+        .map_err(|err| format!("invalid ffprobe height `{height}`: {err}"))?;
+
+    if width == 0 || height == 0 {
+        return Err(format!(
+            "ffprobe reported empty video size {width}x{height}"
+        ));
+    }
+
+    Ok((width, height))
+}
+
+impl Drop for FfmpegVideoReader {
+    fn drop(&mut self) {
+        if let Ok(Some(_)) = self.child.try_wait() {
+            return;
+        }
+
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 /// 推理阶段：接收预处理后的数据，执行模型推理，并将结果发送到后续处理阶段
@@ -152,9 +588,29 @@ pub fn infer(
     infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>, // 发送推理结果到后续处理阶段
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut infer_count = 0_u64;
+        let mut infer_total = Duration::ZERO;
+        let output_name = match session
+            .outputs()
+            .iter()
+            .find(|output| output.name() == "output")
+            .or_else(|| session.outputs().first())
+            .map(|output| output.name().to_string())
+        {
+            Some(output_name) => output_name,
+            None => {
+                warn!("infer: armor session has no output");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+
         loop {
-            if !IS_RUNNING.load(Ordering::SeqCst) {
-                info!("infer: Stopping processing as IS_RUNNING is false");
+            if !IS_RUNNING.load(Ordering::SeqCst) && pre_infer_queue.is_empty() {
+                info!(
+                    "infer: stopping after {infer_count} frames, avg infer {:?}",
+                    avg_duration(infer_total, infer_count)
+                );
                 break;
             }
             if let Some(mut frame) = pop_latest_until_running(
@@ -163,45 +619,57 @@ pub fn infer(
             )
             .await
             {
-                info!(
+                debug!(
                     "infer: Frame ID {} received form processing, time used: {:?}",
                     frame.id(),
                     frame.time_used()
                 );
                 frame.set_state(RbtFrameStage::Infer);
                 let id = frame.id(); // 获取帧 ID，用于日志记录
+                let output_name = output_name.clone();
                 // 在阻塞线程中执行推理操作
                 let output_result = tokio::task::spawn_blocking(move || {
-                    // 执行模型推理
+                    let started = StdInstant::now();
                     let output_array = {
                         let outputs = session
-                            .run(inputs![
-                                TensorRef::from_array_view(frame.pre_data()).unwrap()
-                            ])
-                            .unwrap();
-                        outputs["output0"]
+                            .run(inputs![TensorRef::from_array_view(frame.pre_data_ref())
+                                .map_err(|err| err.to_string())?])
+                            .map_err(|err| err.to_string())?;
+                        outputs[output_name.as_str()]
                             .try_extract_array::<f32>()
-                            .unwrap()
-                            .t()
-                            .into_owned()
+                            .map_err(|err| err.to_string())?
                             .as_standard_layout()
-                            .into_shape_with_order((5040, 48, 1)) // 重塑输出形状，基于先验的模型尺寸
-                            .expect("Failed to reshape output")
                             .to_owned()
+                            .into_shape_with_order((ARMOR_OUTPUT_ROWS, ARMOR_OUTPUT_COLS))
+                            .map_err(|err| {
+                                format!(
+                                    "failed to reshape armor output to [{ARMOR_OUTPUT_ROWS},{ARMOR_OUTPUT_COLS}]: {err}"
+                                )
+                            })?
                     };
                     frame.infer_data().assign(&output_array);
-                    (session, frame) // 返回会话和处理后的帧
+                    Ok::<_, String>((session, frame, started.elapsed())) // 返回会话和处理后的帧
                 })
                 .await;
 
                 // 处理推理结果
-                if let Ok((session_return, output)) = output_result {
-                    infer_post_queue.push_latest(output); // 将最新推理结果发送到后处理阶段
-                    session = session_return; // 确保会话在闭包外部可用
-                } else {
-                    warn!("infer: Failed to process frame ID: {}", id);
-                    IS_RUNNING.store(false, Ordering::SeqCst);
-                    break;
+                match output_result {
+                    Ok(Ok((session_return, output, infer_elapsed))) => {
+                        infer_count = infer_count.wrapping_add(1);
+                        infer_total += infer_elapsed;
+                        infer_post_queue.push_latest(output); // 将最新推理结果发送到后处理阶段
+                        session = session_return; // 确保会话在闭包外部可用
+                    }
+                    Ok(Err(err)) => {
+                        warn!("infer: Failed to process frame ID {id}: {err}");
+                        IS_RUNNING.store(false, Ordering::SeqCst);
+                        break;
+                    }
+                    Err(err) => {
+                        warn!("infer: Failed to join worker for frame ID {id}: {err}");
+                        IS_RUNNING.store(false, Ordering::SeqCst);
+                        break;
+                    }
                 }
             }
         }
@@ -216,13 +684,28 @@ pub fn post_process(
     rec: rr::RecordingStream,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let mut post_count = 0_u64;
+        let mut post_total = Duration::ZERO;
+        let mut decoded_zero_count = 0_u64;
+        let mut decoded_one_count = 0_u64;
+        let mut decoded_multi_count = 0_u64;
+        let mut solved_zero_count = 0_u64;
+        let mut solved_one_count = 0_u64;
+        let mut solved_multi_count = 0_u64;
+        let mut max_decoded_armors = 0_usize;
+        let mut max_solved_armors = 0_usize;
+        let mut decode_stats = ArmorYoloDecodeStats::default();
         loop {
-            if !IS_RUNNING.load(Ordering::SeqCst) {
-                info!("post_process: Stopping processing as IS_RUNNING is false");
+            if !IS_RUNNING.load(Ordering::SeqCst) && frame.is_empty() {
+                info!(
+                    "post_process: stopping after {post_count} frames, avg post {:?}, decoded armors 0/1/>1={decoded_zero_count}/{decoded_one_count}/{decoded_multi_count}, max decoded {max_decoded_armors}, solved armors 0/1/>1={solved_zero_count}/{solved_one_count}/{solved_multi_count}, max solved {max_solved_armors}, decode stats {:?}",
+                    avg_duration(post_total, post_count),
+                    decode_stats,
+                );
                 break;
             }
-            let detector_cfg = cfg.detector_cfg.clone();
-            let game_cfg = cfg.game_cfg.clone();
+            let armor_cfg = cfg.detector_cfg.armor.clone();
+            let self_fraction = cfg.game_cfg.self_fraction();
             let cam_k = cfg.cam_cfg.cam_k();
             let rec = rec.clone();
             if let Some(mut frame) =
@@ -230,7 +713,7 @@ pub fn post_process(
                     .await
             {
                 let time_used = frame.time_used(); // 获取处理时间
-                info!(
+                debug!(
                     "post_process: Frame ID {} received in {:?}",
                     frame.id(),
                     time_used
@@ -239,86 +722,75 @@ pub fn post_process(
                 let id = frame.id(); // 获取帧 ID，用于日志记录
                 // 在阻塞线程中执行后处理操作
                 let result = tokio::task::spawn_blocking(move || {
-                    let binding = frame.infer_data();
-                    let output = binding.slice(nd::s![.., .., 0]);
-
-                    let mut boxes = Vec::new(); // 存储目标检测框
-
-                    // 遍历每一行输出，提取目标检测框信息
-                    for (idx, row) in output.axis_iter(nd::Axis(0)).enumerate() {
-                        let row: Vec<_> = row.iter().copied().collect();
-                        let (class_id, prob) = row[4..40]
-                            .iter()
-                            .enumerate()
-                            .map(|(index, value)| (index, *value))
-                            .reduce(|accum, row| if row.1 > accum.1 { row } else { accum })
-                            .unwrap();
-
-                        // 如果置信度低于阈值，跳过该检测框
-                        if prob < detector_cfg.confidence_threshold {
-                            continue;
-                        }
-
-                        let xc = row[0]; // 中心点 x 坐标
-                        let yc = row[1]; // 中心点 y 坐标
-                        let w = row[2]; // 检测框宽度
-                        let h = row[3]; // 检测框高度
-
-                        let half_w = w / 2.0;
-                        let half_h = h / 2.0;
-
-                        boxes.push((
-                            BBox::new(xc - half_w, yc - half_h, xc + half_w, yc + half_h),
-                            class_id,
-                            prob,
-                            idx,
-                        ));
-                    }
-
-                    // 非极大值抑制：去除重叠的检测框，保留最优框
-                    let result = nms(boxes);
-
-                    let mut id = 0usize;
-                    // 收集装甲板信息
-                    let mut armors =
-                        HashMap::<EnemyId, Vec<DetectedArmor>>::with_capacity(result.len());
-                    for (_, class_id, _, idx) in result {
-                        //     let armor = ArmorKeyPoints::new(
-                        //         ImgCoord::from_f32(output[[idx, 0]], output[[idx, 1]]), // 中心点坐标
-                        //         ImgCoord::from_f32(output[[idx, 40]], output[[idx, 41]]), // 特征点 1
-                        //         ImgCoord::from_f32(output[[idx, 42]], output[[idx, 43]]), // 特征点 2
-                        //         ImgCoord::from_f32(output[[idx, 44]], output[[idx, 45]]), // 特征点 3
-                        //         ImgCoord::from_f32(output[[idx, 46]], output[[idx, 47]]), // 特征点 4
-                        //     );
-                        //     armors.push(armor); // 添加到装甲板列表
-                        let armor_label = &YOLO_LABEL_TABLE[class_id];
-                        if armor_label.color() == &game_cfg.self_fraction().unwrap() {
-                            continue;
-                        }
-                        let armor_id = *armor_label.id();
-
-                        let armor = DetectedArmor::new(
-                            RbtImgPoint2::new_screen_pixel(output[[idx, 0]], output[[idx, 1]]),
-                            RbtImgPoint2::new_screen_pixel(output[[idx, 40]], output[[idx, 41]]),
-                            RbtImgPoint2::new_screen_pixel(output[[idx, 42]], output[[idx, 43]]),
-                            RbtImgPoint2::new_screen_pixel(output[[idx, 44]], output[[idx, 45]]),
-                            RbtImgPoint2::new_screen_pixel(output[[idx, 46]], output[[idx, 47]]),
-                            id,
-                        );
-
-                        id += 1;
-                        armors.entry(armor_id).or_default().push(armor);
-                    }
-
+                    let started = StdInstant::now();
+                    let output = frame.infer_data_ref();
+                    let postprocess_cfg =
+                        ArmorYoloPostprocessCfg::from_armor_cfg(&armor_cfg, self_fraction);
+                    let (armors, stats) = decode_armor_output_with_stats(
+                        &output,
+                        frame.letterbox_transform(),
+                        &postprocess_cfg,
+                    );
+                    let decoded_armor_count = armors.values().map(Vec::len).sum::<usize>();
+                    let decoded_enemy_count = armors.len();
                     let solved_enemies = enemys_solver(armors, &cam_k, &rec)?;
-                    Ok::<_, lib::rbt_infra::rbt_err::RbtError>((frame, solved_enemies))
+                    let solved_armor_count = solved_enemies
+                        .values()
+                        .filter_map(|result| result.as_ref())
+                        .map(|result| result.armors.len())
+                        .sum::<usize>();
+                    Ok::<_, lib::rbt_infra::rbt_err::RbtError>((
+                        frame,
+                        solved_enemies,
+                        started.elapsed(),
+                        decoded_armor_count,
+                        decoded_enemy_count,
+                        solved_armor_count,
+                        stats,
+                    ))
                 })
                 .await;
 
-                if let Ok(Ok((_frame, solved_enemies))) = result {
+                if let Ok(Ok((
+                    _frame,
+                    solved_enemies,
+                    post_elapsed,
+                    decoded_armor_count,
+                    decoded_enemy_count,
+                    solved_armor_count,
+                    stats,
+                ))) = result
+                {
+                    post_count = post_count.wrapping_add(1);
+                    post_total += post_elapsed;
+                    match decoded_armor_count {
+                        0 => decoded_zero_count = decoded_zero_count.wrapping_add(1),
+                        1 => decoded_one_count = decoded_one_count.wrapping_add(1),
+                        _ => decoded_multi_count = decoded_multi_count.wrapping_add(1),
+                    }
+                    match solved_armor_count {
+                        0 => solved_zero_count = solved_zero_count.wrapping_add(1),
+                        1 => solved_one_count = solved_one_count.wrapping_add(1),
+                        _ => solved_multi_count = solved_multi_count.wrapping_add(1),
+                    }
+                    max_decoded_armors = max_decoded_armors.max(decoded_armor_count);
+                    max_solved_armors = max_solved_armors.max(solved_armor_count);
+                    decode_stats.rows += stats.rows;
+                    decode_stats.score_pass += stats.score_pass;
+                    decode_stats.color_pass += stats.color_pass;
+                    decode_stats.self_color_pass += stats.self_color_pass;
+                    decode_stats.number_pass += stats.number_pass;
+                    decode_stats.geometry_pass += stats.geometry_pass;
+                    decode_stats.nms_kept += stats.nms_kept;
+                    decode_stats.confidence_pass += stats.confidence_pass;
+                    if decoded_armor_count > 1 || solved_armor_count > 1 {
+                        debug!(
+                            "post_process: frame {id} decoded {decoded_armor_count} armors across {decoded_enemy_count} ids, solved {solved_armor_count} armors"
+                        );
+                    }
                     solved_queue.push_latest(solved_enemies);
                     let time_used = _frame.time_used(); // 获取处理时间
-                    info!(
+                    debug!(
                         "post_process: Frame ID {} processed successfully, time used: {:?}",
                         id, time_used
                     );
@@ -338,11 +810,14 @@ pub fn post_process(
 pub fn estimate_process(
     solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
     track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
+    rec: rr::RecordingStream,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(2));
         let mut estimator_poll = RbtHandlerPoll::new();
         let mut snapshot_seq = 0_u64;
+        let mut raw_visible = false;
+        let mut filtered_visible = false;
         loop {
             ticker.tick().await;
             if !IS_RUNNING.load(Ordering::SeqCst) && solved_queue.is_empty() {
@@ -351,11 +826,29 @@ pub fn estimate_process(
             }
 
             let enemys = solved_queue.try_pop_latest().unwrap_or_default();
+            let raw_enemies = if rec.is_enabled() {
+                Some(enemys.clone())
+            } else {
+                None
+            };
             estimator_poll.update(&GENERIC_RBT_CFG.read().unwrap().estimator_cfg, enemys);
             snapshot_seq = snapshot_seq.wrapping_add(1);
+            let target = estimator_poll.selected_snapshot();
+            if let Some(raw_enemies) = raw_enemies
+                && let Err(err) = log_rerun_filter_snapshot(
+                    &rec,
+                    snapshot_seq,
+                    &raw_enemies,
+                    target,
+                    &mut raw_visible,
+                    &mut filtered_visible,
+                )
+            {
+                warn!("estimate_process: failed to log filter snapshot to rerun: {err}");
+            }
             track_queue.push_latest(PlannerTrackSnapshot {
                 seq: snapshot_seq,
-                target: estimator_poll.selected_snapshot(),
+                target,
                 publish_tp: Instant::now(),
             });
         }
@@ -581,5 +1074,38 @@ mod tests {
         assert_eq!(feedback.gimbal_pitch, 0.0);
         assert!(!feedback.mcu_fire_permit);
         assert_eq!(feedback.task_mode, TaskMode::AutoShot);
+    }
+
+    #[test]
+    fn video_reader_decodes_default_video_and_letterboxes_frame() {
+        let video_path = video_input_path();
+        if !video_path.is_file() {
+            return;
+        }
+
+        let mut reader = match FfmpegVideoReader::open(&video_path) {
+            Ok(reader) => reader,
+            Err(err)
+                if err.contains("failed to start ffmpeg")
+                    || err.contains("failed to start ffprobe") =>
+            {
+                return;
+            }
+            Err(err) => panic!("{err}"),
+        };
+        let frame = reader
+            .read_frame()
+            .expect("ffmpeg should decode the first video frame")
+            .expect("video should contain at least one frame");
+        assert!(frame.width() > 0);
+        assert!(frame.height() > 0);
+
+        let mut input = nd::Array4::<half::f16>::zeros((1, 3, 640, 640));
+        let transform = preprocess_letterbox_f16(input.view_mut(), &frame);
+
+        assert_eq!(input.shape(), &[1, 3, 640, 640]);
+        assert_eq!(transform.image_width, frame.width());
+        assert_eq!(transform.image_height, frame.height());
+        assert!(transform.scale > 0.0);
     }
 }
