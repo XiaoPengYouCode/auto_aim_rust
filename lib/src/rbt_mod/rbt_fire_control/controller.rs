@@ -427,12 +427,11 @@ impl FireControlController {
             .first_slot_error_deg
             .unwrap_or(output.preview_tracking_error_deg)
             .abs();
-        let gate_preview = first_slot_error_deg
-            .is_finite()
-            .then_some(first_slot_error_deg < tolerance_deg)
-            .unwrap_or(
-                output.preview_tracking_valid && output.preview_tracking_error_deg < tolerance_deg,
-            );
+        let gate_preview = if first_slot_error_deg.is_finite() {
+            first_slot_error_deg < tolerance_deg
+        } else {
+            output.preview_tracking_valid && output.preview_tracking_error_deg < tolerance_deg
+        };
         let gate_impact = if require_impact_angle_gate {
             gate_result
                 .first_slot_impact

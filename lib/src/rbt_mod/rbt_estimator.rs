@@ -244,8 +244,8 @@ impl RbtEstimator {
             track_valid: !tracker_snapshot.diverged,
             fire_permit: self.fire,
             motion_state: target_motion_state(&state),
-            motion_uniform: motion_uniform(&tracker_snapshot),
-            observation_stable: observation_stable(&tracker_snapshot),
+            motion_uniform: motion_uniform(tracker_snapshot),
+            observation_stable: observation_stable(tracker_snapshot),
             motion_translation_burst_metric: metric_mm_to_m(
                 tracker_snapshot.motion_translation_burst_metric,
             ),
