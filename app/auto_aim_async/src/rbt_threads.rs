@@ -22,9 +22,8 @@ use lib::{
     },
     rbt_mod::{
         rbt_comm::rbt_comm_frame::{
-            AimingState, CAN_FRAME_SIZE, CONTROL_LOOP_PERIOD_MS, CtrlData,
-            DEFAULT_BULLET_SPEED_MPS, FEEDBACK_STALE_TIMEOUT_MS, SelfFraction, SensData,
-            ShotBuffMode, ShotMode, TaskMode,
+            CAN_FRAME_SIZE, CONTROL_LOOP_PERIOD_MS, DEFAULT_BULLET_SPEED_MPS,
+            FEEDBACK_STALE_TIMEOUT_MS, SelfFraction, SensData, TaskMode,
         },
         rbt_detector::{
             rbt_frame::{ARMOR_OUTPUT_COLS, ARMOR_OUTPUT_ROWS, RbtFrame, RbtFrameStage},
@@ -34,10 +33,7 @@ use lib::{
             },
         },
         rbt_estimator::{EnemyTrackSnapshot, RbtHandlerPoll},
-        rbt_fire_control::{
-            FireGateConfig, PlannerTarget, SecondOrderPositionMpc, SecondOrderPositionMpcConfig,
-            ShotSlotGate, YawPlanner,
-        },
+        rbt_fire_control::{FireControlController, FireControlInput},
         rbt_solver::enemys_solver,
     },
 };
@@ -329,16 +325,6 @@ fn default_feedback(bullet_speed_mps: f64) -> SensData {
         mcu_fire_permit: false,
         raw_task_mode: TaskMode::AutoShot.into(),
         mapped_task_mode: TaskMode::AutoShot,
-    }
-}
-
-fn hold_current_gimbal_control(feedback: SensData) -> CtrlData {
-    CtrlData {
-        gimbal_yaw: feedback.gimbal_yaw,
-        gimbal_pitch: feedback.gimbal_pitch,
-        shot_mode: ShotMode::DoNothing,
-        shot_buff_mode: ShotBuffMode::ShotBuffOff,
-        aiming_state: AimingState::AimingNoTarget,
     }
 }
 
@@ -861,13 +847,10 @@ pub fn control_loop_250hz(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
-        let fire_gate = FireGateConfig::default();
-        let mut yaw_planner = YawPlanner::default();
-        let mut yaw_mpc = match SecondOrderPositionMpc::new(SecondOrderPositionMpcConfig::default())
-        {
-            Ok(mpc) => mpc,
+        let mut fire_control = match FireControlController::new() {
+            Ok(controller) => controller,
             Err(err) => {
-                error!("control_loop_250hz: failed to build yaw MPC: {err}");
+                error!("control_loop_250hz: failed to build fire-control controller: {err}");
                 IS_RUNNING.store(false, Ordering::SeqCst);
                 return;
             }
@@ -905,105 +888,21 @@ pub fn control_loop_250hz(
                 default_feedback(cfg.general_cfg.bullet_speed)
             };
 
-            let mut control_data = hold_current_gimbal_control(feedback);
-            let mut target_seen = false;
-            let mut stale = false;
-            let mut yaw_error_deg = 0.0;
-            let pitch_error_deg = 0.0;
-            let mut tolerance_deg = fire_gate.yaw_tolerance_deg(0.0);
-
-            if let Some(snapshot) = latest_snapshot.as_ref() {
-                let snapshot_age_ms = snapshot.publish_tp.elapsed().as_secs_f64() * 1_000.0;
-                stale = snapshot_age_ms > FIRE_CONTROL_SNAPSHOT_STALE_MS;
-
-                if !stale && let Some(snapshot_target) = snapshot.target {
-                    target_seen = true;
-                    if snapshot_target.track_valid {
-                        let bullet_speed_mps =
-                            feedback_bullet_speed(&feedback, cfg.general_cfg.bullet_speed);
-                        let target = PlannerTarget::from_snapshot(&snapshot_target);
-                        let plan = yaw_planner.plan(Some(target), bullet_speed_mps);
-
-                        if plan.control {
-                            let yaw_ref_deg: Vec<f64> = plan
-                                .yaw_ref_rad
-                                .iter()
-                                .map(|value| value.to_degrees())
-                                .collect();
-                            let yaw_rate_ref_deg_s: Vec<f64> = plan
-                                .yaw_rate_ref_rad_s
-                                .iter()
-                                .map(|value| value.to_degrees())
-                                .collect();
-
-                            match yaw_mpc.update_trajectory(
-                                &yaw_ref_deg,
-                                &yaw_rate_ref_deg_s,
-                                feedback.gimbal_yaw as f64,
-                                feedback.yaw_speed as f64,
-                                dt_s,
-                            ) {
-                                Ok(output) => {
-                                    let impact_ref_deg: Vec<f64> = plan
-                                        .impact_delta_angle_ref_rad
-                                        .iter()
-                                        .map(|value| value.to_degrees())
-                                        .collect();
-                                    let distance_m =
-                                        plan.target_position_m.x.hypot(plan.target_position_m.y);
-                                    tolerance_deg = fire_gate.yaw_tolerance_deg(distance_m);
-                                    let gate_result =
-                                        fire_gate.count_viable_shot_slots(ShotSlotGate {
-                                            predicted_yaw_deg: &output.predicted_yaw_deg,
-                                            reference_yaw_deg: &output.reference_yaw_deg,
-                                            impact_delta_angle_ref_deg: Some(&impact_ref_deg),
-                                            tolerance_deg,
-                                            first_slot_time_s: dt_s,
-                                            target_omega_rad_s: target.state()[7],
-                                            require_impact_angle_gate: true,
-                                            mcu_fire_permit: feedback_fresh
-                                                && feedback.mcu_fire_permit
-                                                && snapshot_target.fire_permit,
-                                        });
-                                    yaw_error_deg = gate_result
-                                        .first_slot_error_deg
-                                        .unwrap_or(output.preview_tracking_error_deg)
-                                        .abs();
-                                    let shot_mode = if gate_result.viable_slot_count > 0 {
-                                        ShotMode::AutoFire
-                                    } else {
-                                        ShotMode::AimOnly
-                                    };
-
-                                    control_data = CtrlData {
-                                        gimbal_yaw: output.command_deg as f32,
-                                        gimbal_pitch: feedback.gimbal_pitch,
-                                        shot_mode,
-                                        shot_buff_mode: ShotBuffMode::ShotBuffOff,
-                                        aiming_state: AimingState::AimingWithTarget,
-                                    };
-                                }
-                                Err(err) => {
-                                    warn!("control_loop_250hz: yaw trajectory MPC failed: {err}");
-                                    yaw_mpc.reset(
-                                        feedback.gimbal_yaw as f64,
-                                        feedback.yaw_speed as f64,
-                                    );
-                                }
-                            }
-                        } else {
-                            yaw_mpc.reset(feedback.gimbal_yaw as f64, feedback.yaw_speed as f64);
-                        }
-                    } else {
-                        yaw_planner.reset();
-                        yaw_mpc.reset(feedback.gimbal_yaw as f64, feedback.yaw_speed as f64);
-                    }
-                } else {
-                    yaw_planner.reset();
-                    yaw_mpc.reset(feedback.gimbal_yaw as f64, feedback.yaw_speed as f64);
-                }
-            }
-
+            let snapshot_age_ms = latest_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.publish_tp.elapsed().as_secs_f64() * 1_000.0)
+                .unwrap_or(f64::INFINITY);
+            let stale = snapshot_age_ms > FIRE_CONTROL_SNAPSHOT_STALE_MS;
+            let control_data = fire_control.update(FireControlInput {
+                target: latest_snapshot
+                    .as_ref()
+                    .and_then(|snapshot| snapshot.target),
+                feedback,
+                feedback_fresh,
+                dt_s,
+                snapshot_age_ms,
+            });
+            let stats = fire_control.last_stats();
             let mut payload = [0_u8; CAN_FRAME_SIZE];
             if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
                 warn!("control_loop_250hz: failed to serialize control frame: {err}");
@@ -1018,24 +917,49 @@ pub fn control_loop_250hz(
                     .map(|snapshot| snapshot.seq)
                     .unwrap_or(0);
                 info!(
-                    "control_loop_250hz: seq={} target={} stale={} fb={} yaw={:.2}->{:.2} pitch={:.2}->{:.2} err=({:.2},{:.2}) tol={:.2} shot={:?} can={:02X?}",
+                    "control_loop_250hz: seq={} target={} stale={} fb={} yaw={:.2}->{:.2} pitch={:.2}->{:.2} err={:.2} tol={:.2} slot={} first={} next={} gate=V{}{}{}{}{}{}{}{}{} shot={:?} can={:02X?}",
                     snapshot_seq,
-                    target_seen,
+                    stats.target_detected,
                     stale,
                     feedback_fresh,
                     feedback.gimbal_yaw,
                     control_data.gimbal_yaw,
                     feedback.gimbal_pitch,
                     control_data.gimbal_pitch,
-                    yaw_error_deg,
-                    pitch_error_deg,
-                    tolerance_deg,
+                    stats.yaw_error_deg,
+                    stats.tolerance_deg,
+                    stats.viable_slot_count,
+                    format_status_value(stats.first_slot_error_deg),
+                    format_status_value(stats.next_slot_delay_ms),
+                    if stats.gate_mcu { "U" } else { "x" },
+                    if stats.gate_command_stable { "C" } else { "x" },
+                    if stats.gate_follow { "F" } else { "x" },
+                    if stats.gate_preview { "P" } else { "x" },
+                    if stats.gate_impact { "A" } else { "x" },
+                    if stats.gate_slot { "S" } else { "x" },
+                    if stats.gate_motion { "M" } else { "x" },
+                    if stats.gate_observation { "O" } else { "x" },
+                    if stats.static_bypass_active {
+                        "D"
+                    } else if stats.preview_mpc_active {
+                        "2"
+                    } else {
+                        "x"
+                    },
                     control_data.shot_mode,
                     payload,
                 );
             }
         }
     })
+}
+
+fn format_status_value(value: f64) -> String {
+    if value.is_finite() {
+        format!("{value:.2}")
+    } else {
+        "-".to_string()
+    }
 }
 
 async fn pop_latest_until_running<T>(queue: &RbtSPSCQueueAsync<T>, timeout: Duration) -> Option<T> {
@@ -1049,16 +973,6 @@ async fn pop_latest_until_running<T>(queue: &RbtSPSCQueueAsync<T>, timeout: Dura
         if let Ok(item) = tokio::time::timeout(timeout, queue.pop_latest()).await {
             return item;
         }
-    }
-}
-
-fn feedback_bullet_speed(feedback: &SensData, configured_bullet_speed_mps: f64) -> f64 {
-    if feedback.bullet_speed.is_finite() && feedback.bullet_speed > 1.0 {
-        f64::from(feedback.bullet_speed)
-    } else if configured_bullet_speed_mps.is_finite() && configured_bullet_speed_mps > 1.0 {
-        configured_bullet_speed_mps
-    } else {
-        f64::from(DEFAULT_BULLET_SPEED_MPS)
     }
 }
 
