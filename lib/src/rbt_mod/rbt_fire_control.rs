@@ -4,14 +4,18 @@
 
 use crate::rbt_mod::rbt_comm::rbt_comm_frame::{AimingState, CtrlData, ShotBuffMode, ShotMode};
 
+pub mod controller;
 pub mod fire_gate;
 pub mod second_order_position_mpc;
+pub mod shot_phase;
 pub mod yaw_planner;
+pub use controller::{FireControlController, FireControlInput, FireControlStats};
 pub use fire_gate::{FireGateConfig, ImpactAngleCheck, ShotSlotGate, ShotSlotGateResult};
 pub use second_order_position_mpc::{
     SECOND_ORDER_POSITION_MPC_HORIZON, SecondOrderPositionMpc, SecondOrderPositionMpcConfig,
     SecondOrderPositionMpcOutput,
 };
+pub use shot_phase::{ShotPhaseConfig, ShotPhaseController};
 pub use yaw_planner::{PlannerTarget, YawPlan, YawPlanner, YawPlannerConfig};
 
 pub fn no_target_ctrl_data() -> CtrlData {

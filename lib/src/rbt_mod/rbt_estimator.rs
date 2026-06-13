@@ -28,6 +28,18 @@ pub mod rbt_ypd_angle_tracker;
 /// Snapshot exported by the estimator for the fire-control planner.
 ///
 /// Units are intentionally aligned with `vivsionn::Target`: meters and radians.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetMotionState {
+    Static,
+    Dynamic,
+}
+
+impl TargetMotionState {
+    pub fn is_static(self) -> bool {
+        self == TargetMotionState::Static
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnemyTrackSnapshot {
     pub enemy_id: EnemyId,
@@ -44,6 +56,12 @@ pub struct EnemyTrackSnapshot {
     pub state_age_s: f64,
     pub track_valid: bool,
     pub fire_permit: bool,
+    pub motion_state: TargetMotionState,
+    pub motion_uniform: bool,
+    pub observation_stable: bool,
+    pub motion_translation_burst_metric: f64,
+    pub motion_translation_drift_metric: f64,
+    pub motion_yaw_accel_metric: f64,
 }
 
 impl EnemyTrackSnapshot {
@@ -225,6 +243,16 @@ impl RbtEstimator {
             state_age_s,
             track_valid: !tracker_snapshot.diverged,
             fire_permit: self.fire,
+            motion_state: target_motion_state(&state),
+            motion_uniform: motion_uniform(tracker_snapshot),
+            observation_stable: observation_stable(tracker_snapshot),
+            motion_translation_burst_metric: metric_mm_to_m(
+                tracker_snapshot.motion_translation_burst_metric,
+            ),
+            motion_translation_drift_metric: metric_mm_to_m(
+                tracker_snapshot.motion_translation_drift_metric,
+            ),
+            motion_yaw_accel_metric: tracker_snapshot.motion_yaw_accel_metric,
         })
     }
 
@@ -359,6 +387,40 @@ fn image_center_score(observation: &YpdObservation) -> f64 {
     let dx = observation.image_center.x - 320.0;
     let dy = observation.image_center.y - 192.0;
     dx * dx + dy * dy
+}
+
+fn target_motion_state(state: &[f64; 11]) -> TargetMotionState {
+    let translation_speed_mps = (state[1] * 0.001).hypot(state[3] * 0.001);
+    let z_speed_mps = (state[5] * 0.001).abs();
+    let yaw_rate_rad_s = state[7].abs();
+
+    if translation_speed_mps < 0.25 && z_speed_mps < 0.20 && yaw_rate_rad_s < 0.35 {
+        TargetMotionState::Static
+    } else {
+        TargetMotionState::Dynamic
+    }
+}
+
+fn observation_stable(snapshot: &YpdTrackerSnapshot) -> bool {
+    !snapshot.diverged && (snapshot.converged || snapshot.recent_nis_failures <= 1)
+}
+
+fn motion_uniform(snapshot: &YpdTrackerSnapshot) -> bool {
+    metric_under(snapshot.motion_translation_burst_metric, 8_000.0)
+        && metric_under(snapshot.motion_translation_drift_metric, 4_000.0)
+        && metric_under(snapshot.motion_yaw_accel_metric, 20.0)
+}
+
+fn metric_under(value: f64, threshold: f64) -> bool {
+    !value.is_finite() || value.abs() < threshold
+}
+
+fn metric_mm_to_m(value: f64) -> f64 {
+    if value.is_finite() {
+        value * 0.001
+    } else {
+        f64::NAN
+    }
 }
 
 /// 管理所有敌方单位的估计器。
@@ -536,6 +598,9 @@ enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
         assert_eq!(snapshot.armor_count, 4);
         assert!(snapshot.track_valid);
         assert!(snapshot.fire_permit);
+        assert_eq!(snapshot.motion_state, TargetMotionState::Static);
+        assert!(snapshot.motion_uniform);
+        assert!(snapshot.observation_stable);
         assert!((snapshot.center_xy_m.x - 0.2).abs() < 1e-9);
         assert!(snapshot.center_xy_m.y.abs() < 1e-9);
         assert!(snapshot.body_yaw_rad.abs() < 1e-9);
