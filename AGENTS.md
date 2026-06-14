@@ -53,5 +53,6 @@
   - `cargo clippy --locked --workspace --all-targets -- -D warnings`
   - `cargo test --locked --workspace --all-targets`
 - CI 使用 `.github/workflows/ci.yml` 中同一套命令；本地结论应以这些命令为准。
+- 每次提交前，先检查 `.github/workflows/ci.yml` 当前声明的验证项目，并逐项确认已在本地运行或说明无法本地运行的原因。
 - 改模型 contract、decode、PnP、tracker、route 或发控时，需要补对应单元测试。
 - 改 `app/auto_aim_async` 主线时，确认 Armour route 不回归，并验证 EnergyMechanism route 的状态切换、队列清理和控制输出路径。

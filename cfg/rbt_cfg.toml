@@ -16,6 +16,8 @@ file_log_enable = true
 [general_cfg]
 img_dbg = false
 bullet_speed = 24.0
+can_interface = "can0"
+can_enabled = true
 
 [detector_cfg]
 # 神经网络模型分别放在 model/armor 和 model/engine_mechanism 目录下
@@ -45,3 +47,12 @@ cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]
 [estimator_cfg]
 armor_lost_wait_duration_ms = 100
 enemy_lost_wait_duration_ms = 1000
+ypd_geometry_recovery_window_frames = 24
+ypd_geometry_recovery_cooldown_frames = 12
+ypd_geometry_recovery_mismatch_required_streak = 2
+ypd_geometry_recovery_min_matched_count = 2
+ypd_geometry_recovery_z_sigma_threshold = 3.0
+ypd_geometry_recovery_xy_sigma_threshold = 2.0
+ypd_geometry_recovery_cov_inflation_scale = 48.0
+ypd_geometry_recovery_min_dr_variance = 0.0025
+ypd_geometry_recovery_min_h_variance = 0.000625

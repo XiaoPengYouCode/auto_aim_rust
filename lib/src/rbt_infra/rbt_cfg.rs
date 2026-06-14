@@ -50,6 +50,18 @@ pub struct LoggerCfg {
 pub struct GeneralCfg {
     pub img_dbg: bool,
     pub bullet_speed: f64,
+    #[serde(default = "default_can_interface")]
+    pub can_interface: String,
+    #[serde(default = "default_can_enabled")]
+    pub can_enabled: bool,
+}
+
+fn default_can_interface() -> String {
+    "can0".to_string()
+}
+
+fn default_can_enabled() -> bool {
+    true
 }
 
 // 检测器相关配置
@@ -124,8 +136,62 @@ impl CamCfg {
 pub struct EstimatorCfg {
     armor_lost_wait_duration_ms: u64,
     enemy_lost_wait_duration_ms: u64,
+    #[serde(default = "default_ypd_geometry_recovery_window_frames")]
+    pub ypd_geometry_recovery_window_frames: usize,
+    #[serde(default = "default_ypd_geometry_recovery_cooldown_frames")]
+    pub ypd_geometry_recovery_cooldown_frames: usize,
+    #[serde(default = "default_ypd_geometry_recovery_mismatch_required_streak")]
+    pub ypd_geometry_recovery_mismatch_required_streak: usize,
+    #[serde(default = "default_ypd_geometry_recovery_min_matched_count")]
+    pub ypd_geometry_recovery_min_matched_count: usize,
+    #[serde(default = "default_ypd_geometry_recovery_z_sigma_threshold")]
+    pub ypd_geometry_recovery_z_sigma_threshold: f64,
+    #[serde(default = "default_ypd_geometry_recovery_xy_sigma_threshold")]
+    pub ypd_geometry_recovery_xy_sigma_threshold: f64,
+    #[serde(default = "default_ypd_geometry_recovery_cov_inflation_scale")]
+    pub ypd_geometry_recovery_cov_inflation_scale: f64,
+    #[serde(default = "default_ypd_geometry_recovery_min_dr_variance")]
+    pub ypd_geometry_recovery_min_dr_variance: f64,
+    #[serde(default = "default_ypd_geometry_recovery_min_h_variance")]
+    pub ypd_geometry_recovery_min_h_variance: f64,
     // top1_activate_w: f64,
     // top2_activate_w: f64,
+}
+
+fn default_ypd_geometry_recovery_window_frames() -> usize {
+    24
+}
+
+fn default_ypd_geometry_recovery_cooldown_frames() -> usize {
+    12
+}
+
+fn default_ypd_geometry_recovery_mismatch_required_streak() -> usize {
+    2
+}
+
+fn default_ypd_geometry_recovery_min_matched_count() -> usize {
+    2
+}
+
+fn default_ypd_geometry_recovery_z_sigma_threshold() -> f64 {
+    3.0
+}
+
+fn default_ypd_geometry_recovery_xy_sigma_threshold() -> f64 {
+    2.0
+}
+
+fn default_ypd_geometry_recovery_cov_inflation_scale() -> f64 {
+    48.0
+}
+
+fn default_ypd_geometry_recovery_min_dr_variance() -> f64 {
+    2.5e-3
+}
+
+fn default_ypd_geometry_recovery_min_h_variance() -> f64 {
+    6.25e-4
 }
 
 impl EstimatorCfg {

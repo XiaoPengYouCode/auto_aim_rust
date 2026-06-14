@@ -211,7 +211,7 @@ impl RbtEstimator {
         }
 
         self.update_global_vars(solved_enemy);
-        self.update_tracker(solved_enemy.as_ref(), dt_s);
+        self.update_tracker(cfg, solved_enemy.as_ref(), dt_s);
     }
 
     pub fn snapshot(&self) -> Option<EnemyTrackSnapshot> {
@@ -282,7 +282,12 @@ impl RbtEstimator {
         dt_s.clamp(0.001, 0.05)
     }
 
-    fn update_tracker(&mut self, solved_enemy: Option<&RbtSolvedResult>, dt_s: f64) {
+    fn update_tracker(
+        &mut self,
+        cfg: &EstimatorCfg,
+        solved_enemy: Option<&RbtSolvedResult>,
+        dt_s: f64,
+    ) {
         use EstimatorStateMachine::*;
 
         match &self.state {
@@ -290,7 +295,7 @@ impl RbtEstimator {
             WakeUp | Recovery | Track { .. } => {
                 self.predict_or_reset_tracker(dt_s);
                 if let Some(solved) = solved_enemy {
-                    self.correct_tracker_with_solution(solved);
+                    self.correct_tracker_with_solution(cfg, solved);
                 }
                 self.sync_tracker_snapshot();
             }
@@ -310,7 +315,7 @@ impl RbtEstimator {
         self.ypd_angle_tracker.predict(dt_s);
     }
 
-    fn correct_tracker_with_solution(&mut self, solved: &RbtSolvedResult) {
+    fn correct_tracker_with_solution(&mut self, cfg: &EstimatorCfg, solved: &RbtSolvedResult) {
         let observations = self.ypd_observations(solved);
         let Some(preferred_index) = preferred_observation_index(&observations) else {
             return;
@@ -322,7 +327,9 @@ impl RbtEstimator {
                 .init(&observations[preferred_index], armor_num);
         } else {
             self.ypd_angle_tracker
-                .update_batch(&observations, Some(preferred_index));
+                .note_observation_jump(self.single_or_double, cfg);
+            self.ypd_angle_tracker
+                .update_batch(&observations, Some(preferred_index), cfg);
         }
     }
 
@@ -349,7 +356,9 @@ impl RbtEstimator {
                 } else {
                     radius_from_center
                 };
-                let yaw_rad = if radius_from_center > 1e-6 {
+                let yaw_rad = if armor_num == 3 {
+                    armor.observed_yaw_rad()
+                } else if radius_from_center > 1e-6 {
                     (dy / sign).atan2(dx / sign)
                 } else {
                     armor.observed_yaw_rad()

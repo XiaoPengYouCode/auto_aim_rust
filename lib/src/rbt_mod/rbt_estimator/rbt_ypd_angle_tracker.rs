@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use crate::rbt_infra::rbt_cfg::EstimatorCfg;
+
 const STATE_DIM: usize = 11;
 const PRIMARY_RADIUS: usize = 8;
 const DELTA_RADIUS: usize = 9;
@@ -8,8 +10,30 @@ const MIN_RADIUS_MM: f64 = 50.0;
 const MAX_RADIUS_MM: f64 = 500.0;
 const OUTPOST_RADIUS_MM: f64 = 276.5;
 const OUTPOST_MAX_HEIGHT_OFFSET_MM: f64 = 600.0;
+const OUTPOST_RADIUS_PRIOR_SIGMA_MM: f64 = 18.0;
+const OUTPOST_PLANE_TO_RADIAL_YAW_OFFSET_RAD: f64 = 153.0 * std::f64::consts::PI / 180.0;
+const OUTPOST_HEIGHT_STEP_MM: f64 = 105.0;
+const OUTPOST_HEIGHT_PHASE_SIGMA_MM: f64 = 35.0;
+const OUTPOST_HEIGHT_PHASE_LOCK_MARGIN: f64 = 9.0;
+const OUTPOST_HEIGHT_PHASE_CENTER_CAPACITY: usize = 96;
+const OUTPOST_HEIGHT_PHASE_MIN_CENTER_SAMPLES: usize = 36;
+const OUTPOST_HEIGHT_PHASE_MIN_SAMPLES_PER_ID: usize = 6;
+const OUTPOST_PRIOR_GATE_MIN_UPDATES: usize = 8;
+const OUTPOST_REINIT_AFTER_REJECTED_UPDATES: usize = 4;
+const OUTPOST_PRIOR_NIS_REJECT_THRESHOLD: f64 = 16.0;
+const OUTPOST_PRIMARY_ONLY_IMAGE_Y_THRESHOLD: f64 = 600.0;
+const OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2: f64 = 1.0;
+const OUTPOST_HEIGHT_RANK_CANDIDATES: [[i8; 3]; 6] = [
+    [1, 0, -1],
+    [0, -1, 1],
+    [-1, 1, 0],
+    [1, -1, 0],
+    [-1, 0, 1],
+    [0, 1, -1],
+];
 const MOTION_HISTORY_CAPACITY: usize = 128;
 const NIS_WINDOW_SIZE: usize = 100;
+const M2_TO_MM2: f64 = 1_000_000.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct YpdObservation {
@@ -42,6 +66,12 @@ struct MotionSample {
     center_x: f64,
     center_y: f64,
     yaw_rate: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GeometryRecoverySample {
+    xy_residual_mm: f64,
+    z_residual_mm: f64,
 }
 
 struct ArmorAssignmentSearch<'a> {
@@ -110,6 +140,16 @@ pub struct YpdAngleTracker {
     recent_nis_failures: VecDeque<bool>,
     last_batch_match_ids: Vec<isize>,
     motion_history: VecDeque<MotionSample>,
+    geometry_recovery_window_remaining: usize,
+    geometry_recovery_cooldown_remaining: usize,
+    geometry_mismatch_streak: usize,
+    consecutive_rejected_updates: usize,
+    outpost_height_phase_scores: [f64; 6],
+    outpost_height_phase_observations: usize,
+    outpost_height_phase: Option<usize>,
+    outpost_height_phase_id_samples: VecDeque<usize>,
+    outpost_height_phase_id_counts: [usize; 3],
+    outpost_height_phase_center_samples: [VecDeque<f64>; 6],
 }
 
 impl YpdAngleTracker {
@@ -128,6 +168,16 @@ impl YpdAngleTracker {
             recent_nis_failures: VecDeque::from([false]),
             last_batch_match_ids: Vec::new(),
             motion_history: VecDeque::new(),
+            geometry_recovery_window_remaining: 0,
+            geometry_recovery_cooldown_remaining: 0,
+            geometry_mismatch_streak: 0,
+            consecutive_rejected_updates: 0,
+            outpost_height_phase_scores: [0.0; 6],
+            outpost_height_phase_observations: 0,
+            outpost_height_phase: None,
+            outpost_height_phase_id_samples: VecDeque::new(),
+            outpost_height_phase_id_counts: [0; 3],
+            outpost_height_phase_center_samples: std::array::from_fn(|_| VecDeque::new()),
         };
         tracker.reset();
         tracker
@@ -148,6 +198,11 @@ impl YpdAngleTracker {
         self.recent_nis_failures.push_back(false);
         self.last_batch_match_ids.clear();
         self.motion_history.clear();
+        self.geometry_recovery_window_remaining = 0;
+        self.geometry_recovery_cooldown_remaining = 0;
+        self.geometry_mismatch_streak = 0;
+        self.consecutive_rejected_updates = 0;
+        self.reset_outpost_height_phase();
     }
 
     pub fn init(&mut self, observation: &YpdObservation, armor_num: usize) {
@@ -167,7 +222,7 @@ impl YpdAngleTracker {
             200.0
         };
 
-        let yaw = normalize_angle(observation.yaw_rad);
+        let yaw = radial_yaw_from_observed_yaw(observation.yaw_rad, self.armor_num);
         let sign = radial_sign(self.armor_num);
         self.x[0] = observation.position_mm.x - sign * radius * yaw.cos();
         self.x[2] = observation.position_mm.y - sign * radius * yaw.sin();
@@ -177,8 +232,8 @@ impl YpdAngleTracker {
 
         self.p = if self.is_outpost {
             diagonal_matrix([
-                1_000.0, 64_000.0, 1_000.0, 64_000.0, 1_000.0, 81_000.0, 0.4, 100.0, 1.0, 90_000.0,
-                90_000.0,
+                1_000.0, 64_000.0, 1_000.0, 64_000.0, 1_000.0, 81_000.0, 0.4, 100.0, 100.0,
+                90_000.0, 90_000.0,
             ])
         } else {
             diagonal_matrix([
@@ -220,14 +275,24 @@ impl YpdAngleTracker {
 
         self.x = f * self.x;
         self.x[6] = normalize_angle(self.x[6]);
-        self.clamp_geometry();
         self.p = symmetrize(f * self.p * f.transpose() + self.process_noise(dt));
+        self.clamp_geometry();
+    }
+
+    pub fn note_observation_jump(&mut self, jumped: bool, cfg: &EstimatorCfg) {
+        if jumped && self.initialized && self.armor_num == 4 {
+            self.geometry_recovery_window_remaining =
+                cfg.ypd_geometry_recovery_window_frames.max(1);
+        } else if !jumped && self.geometry_recovery_window_remaining == 0 {
+            self.geometry_mismatch_streak = 0;
+        }
     }
 
     pub fn update_batch(
         &mut self,
         observations: &[YpdObservation],
         preferred_index: Option<usize>,
+        cfg: &EstimatorCfg,
     ) {
         self.last_batch_match_ids.clear();
         if !self.initialized || observations.is_empty() {
@@ -239,21 +304,51 @@ impl YpdAngleTracker {
         let assignment = self.assign_armor_ids(&observations[..limit]);
         let tracked_index = preferred_index.filter(|index| *index < limit).unwrap_or(0);
         let mut primary_match = None;
+        let mut recovery_samples = Vec::new();
+        let use_primary_only = self.is_outpost
+            && limit > 1
+            && preferred_index.is_some_and(|index| {
+                index < limit
+                    && observations[index].image_center.y < OUTPOST_PRIMARY_ONLY_IMAGE_Y_THRESHOLD
+            });
+        let mut accepted_count = 0;
 
         for index in 0..limit {
+            if use_primary_only && index != tracked_index {
+                continue;
+            }
             let matched_id = assignment[index]
                 .unwrap_or_else(|| self.select_best_armor_id(&observations[index]));
+            if self.geometry_recovery_window_remaining > 0 && self.armor_num == 4 {
+                recovery_samples
+                    .push(self.geometry_recovery_sample(&observations[index], matched_id));
+            }
             if self.correct_with_observation(&observations[index], matched_id) {
                 self.last_batch_match_ids[index] = matched_id as isize;
+                self.update_outpost_height_phase(&observations[index], matched_id);
+                accepted_count += 1;
                 if index == tracked_index {
                     primary_match = Some(matched_id);
                 }
             }
         }
 
+        if self.is_outpost
+            && accepted_count == 0
+            && self.consecutive_rejected_updates >= OUTPOST_REINIT_AFTER_REJECTED_UPDATES
+        {
+            self.init(&observations[tracked_index], self.armor_num);
+            self.tracked_id = self.select_best_armor_id(&observations[tracked_index]);
+            self.last_batch_match_ids = vec![-1; observations.len()];
+            self.last_batch_match_ids[tracked_index] = self.tracked_id as isize;
+            return;
+        }
+
+        self.apply_locked_outpost_height_offsets();
         if let Some(matched_id) = primary_match {
             self.tracked_id = matched_id;
         }
+        self.update_geometry_recovery(&recovery_samples, cfg);
         self.clamp_geometry();
         self.append_motion_sample();
     }
@@ -369,7 +464,7 @@ impl YpdAngleTracker {
         na::Point3::new(
             state[0] + sign * radius * angle.cos(),
             state[2] + sign * radius * angle.sin(),
-            state[4] + height_offset_from_state(state, self.armor_num, id),
+            state[4] + self.height_offset_for_id(state, id),
         )
     }
 
@@ -379,7 +474,12 @@ impl YpdAngleTracker {
             self.x[6] + clamped_id as f64 * std::f64::consts::TAU / self.armor_num as f64,
         );
         let position = self.predicted_armor_position(&self.x, clamped_id);
-        [position.x, position.y, position.z, angle]
+        [
+            position.x,
+            position.y,
+            position.z,
+            observed_yaw_from_radial_yaw(angle, self.armor_num),
+        ]
     }
 
     fn predicted_measurement(
@@ -391,7 +491,12 @@ impl YpdAngleTracker {
         let ypd = xyz_to_ypd(position);
         let angle =
             normalize_angle(state[6] + id as f64 * std::f64::consts::TAU / self.armor_num as f64);
-        na::SVector::<f64, 4>::new(ypd.x, ypd.y, ypd.z, angle)
+        na::SVector::<f64, 4>::new(
+            ypd.x,
+            ypd.y,
+            ypd.z,
+            observed_yaw_from_radial_yaw(angle, self.armor_num),
+        )
     }
 
     fn measurement_jacobian(
@@ -429,17 +534,19 @@ impl YpdAngleTracker {
         };
 
         h_xyza[(2, 4)] = 1.0;
-        h_xyza[(2, DELTA_RADIUS)] = if self.armor_num == 3 && id == 1 {
+        let outpost_height_locked = self.outpost_height_phase_locked();
+        h_xyza[(2, DELTA_RADIUS)] = if self.armor_num == 3 && !outpost_height_locked && id == 1 {
             1.0
         } else {
             0.0
         };
-        h_xyza[(2, HEIGHT_DIFF)] =
-            if (self.armor_num == 4 && (id == 1 || id == 3)) || (self.armor_num == 3 && id == 2) {
-                1.0
-            } else {
-                0.0
-            };
+        h_xyza[(2, HEIGHT_DIFF)] = if (self.armor_num == 4 && (id == 1 || id == 3))
+            || (self.armor_num == 3 && !outpost_height_locked && id == 2)
+        {
+            1.0
+        } else {
+            0.0
+        };
         h_xyza[(3, 6)] = 1.0;
 
         let h_ypd = xyz_to_ypd_jacobian(self.predicted_armor_position(state, id));
@@ -460,6 +567,23 @@ impl YpdAngleTracker {
         r[(1, 1)] = 4e-3;
         r[(2, 2)] = distance_sigma_mm * distance_sigma_mm;
         r[(3, 3)] = (delta_angle.abs() + 1.0).ln() / 20.0 + 9e-2;
+        if self.is_outpost {
+            let mut distance_scale = 1.0;
+            if observation.image_center.y < 600.0 {
+                distance_scale *= 3.0;
+            }
+            if observation.image_center.y < 450.0 {
+                distance_scale *= 2.0;
+            }
+            let obs_pitch_deg = ypd.y.to_degrees();
+            if obs_pitch_deg < 10.0 {
+                distance_scale *= 2.0;
+            }
+            if obs_pitch_deg < 5.0 {
+                distance_scale *= 1.5;
+            }
+            r[(2, 2)] *= distance_scale;
+        }
         r
     }
 
@@ -482,17 +606,112 @@ impl YpdAngleTracker {
         };
         let prior_nis = residual.transpose() * s_inv * residual;
         let prior_nis = prior_nis[(0, 0)];
+        if self.is_outpost
+            && self.update_count >= OUTPOST_PRIOR_GATE_MIN_UPDATES
+            && prior_nis.is_finite()
+            && prior_nis > OUTPOST_PRIOR_NIS_REJECT_THRESHOLD
+        {
+            self.consecutive_rejected_updates = self.consecutive_rejected_updates.saturating_add(1);
+            self.record_nis(prior_nis);
+            return false;
+        }
 
         let k = self.p * h.transpose() * s_inv;
         let i = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::identity();
         self.x += k * residual;
         self.x[6] = normalize_angle(self.x[6]);
-        self.clamp_geometry();
         self.p = symmetrize((i - k * h) * self.p * (i - k * h).transpose() + k * r * k.transpose());
+        self.apply_outpost_radius_prior();
+        self.clamp_geometry();
 
         self.record_nis(prior_nis);
         self.update_count += 1;
+        self.consecutive_rejected_updates = 0;
         true
+    }
+
+    fn geometry_recovery_sample(
+        &self,
+        observation: &YpdObservation,
+        id: usize,
+    ) -> GeometryRecoverySample {
+        let predicted = self.predicted_armor_position(&self.x, id.min(self.armor_num - 1));
+        let residual = observation.position_mm - predicted;
+        GeometryRecoverySample {
+            xy_residual_mm: residual.x.hypot(residual.y),
+            z_residual_mm: residual.z.abs(),
+        }
+    }
+
+    fn update_geometry_recovery(&mut self, samples: &[GeometryRecoverySample], cfg: &EstimatorCfg) {
+        if self.geometry_recovery_cooldown_remaining > 0 {
+            self.geometry_recovery_cooldown_remaining -= 1;
+        }
+        if self.geometry_recovery_window_remaining == 0 || self.armor_num != 4 {
+            return;
+        }
+        self.geometry_recovery_window_remaining -= 1;
+        if samples.len() < cfg.ypd_geometry_recovery_min_matched_count.max(1) {
+            self.geometry_mismatch_streak = 0;
+            return;
+        }
+
+        let mean_xy = samples
+            .iter()
+            .map(|sample| sample.xy_residual_mm)
+            .sum::<f64>()
+            / samples.len() as f64;
+        let mean_z = samples
+            .iter()
+            .map(|sample| sample.z_residual_mm)
+            .sum::<f64>()
+            / samples.len() as f64;
+        let sigma_dr = self.p[(DELTA_RADIUS, DELTA_RADIUS)].max(1e-9).sqrt();
+        let sigma_h = self.p[(HEIGHT_DIFF, HEIGHT_DIFF)].max(1e-9).sqrt();
+        let xy_over_sigma_dr = mean_xy / sigma_dr;
+        let z_over_sigma_h = mean_z / sigma_h;
+        let mismatch = z_over_sigma_h.is_finite()
+            && xy_over_sigma_dr.is_finite()
+            && ((z_over_sigma_h >= cfg.ypd_geometry_recovery_z_sigma_threshold
+                && xy_over_sigma_dr >= cfg.ypd_geometry_recovery_xy_sigma_threshold)
+                || z_over_sigma_h >= cfg.ypd_geometry_recovery_z_sigma_threshold + 1.0);
+
+        if mismatch {
+            self.geometry_mismatch_streak = self.geometry_mismatch_streak.saturating_add(1);
+        } else {
+            self.geometry_mismatch_streak = 0;
+        }
+
+        if self.geometry_recovery_cooldown_remaining == 0
+            && self.geometry_mismatch_streak
+                >= cfg.ypd_geometry_recovery_mismatch_required_streak.max(1)
+        {
+            self.inflate_geometry_covariance(cfg);
+            self.geometry_mismatch_streak = 0;
+            self.geometry_recovery_cooldown_remaining =
+                cfg.ypd_geometry_recovery_cooldown_frames.max(1);
+            self.geometry_recovery_window_remaining = 0;
+        }
+    }
+
+    fn inflate_geometry_covariance(&mut self, cfg: &EstimatorCfg) {
+        let scale = cfg
+            .ypd_geometry_recovery_cov_inflation_scale
+            .clamp(1.0, 1_000.0);
+        let min_dr_var_mm2 = cfg.ypd_geometry_recovery_min_dr_variance.max(0.0) * M2_TO_MM2;
+        let min_h_var_mm2 = cfg.ypd_geometry_recovery_min_h_variance.max(0.0) * M2_TO_MM2;
+
+        for index in [DELTA_RADIUS, HEIGHT_DIFF] {
+            for col in 0..STATE_DIM {
+                self.p[(index, col)] *= scale.sqrt();
+                self.p[(col, index)] = self.p[(index, col)];
+            }
+        }
+        self.p[(DELTA_RADIUS, DELTA_RADIUS)] =
+            (self.p[(DELTA_RADIUS, DELTA_RADIUS)] * scale).max(min_dr_var_mm2);
+        self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] =
+            (self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] * scale).max(min_h_var_mm2);
+        self.p = symmetrize(self.p);
     }
 
     fn assign_armor_ids(&self, observations: &[YpdObservation]) -> Vec<Option<usize>> {
@@ -520,6 +739,14 @@ impl YpdAngleTracker {
         radius_from_state(&self.x, self.armor_num, id)
     }
 
+    fn height_offset_for_id(&self, state: &na::SVector<f64, STATE_DIM>, id: usize) -> f64 {
+        if self.outpost_height_phase_locked() {
+            self.outpost_height_offset_for_id(id)
+        } else {
+            height_offset_from_state(state, self.armor_num, id)
+        }
+    }
+
     fn record_nis(&mut self, nis: f64) {
         self.last_nis = nis;
         self.recent_nis_failures
@@ -544,11 +771,160 @@ impl YpdAngleTracker {
             self.x[DELTA_RADIUS] = secondary - self.x[PRIMARY_RADIUS];
         } else {
             self.x[PRIMARY_RADIUS] = OUTPOST_RADIUS_MM;
-            self.x[DELTA_RADIUS] = self.x[DELTA_RADIUS]
-                .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
-            self.x[HEIGHT_DIFF] = self.x[HEIGHT_DIFF]
-                .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
+            if self.outpost_height_phase_locked() {
+                self.apply_locked_outpost_height_offsets();
+            } else {
+                self.x[DELTA_RADIUS] = self.x[DELTA_RADIUS]
+                    .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
+                self.x[HEIGHT_DIFF] = self.x[HEIGHT_DIFF]
+                    .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
+            }
         }
+    }
+
+    fn reset_outpost_height_phase(&mut self) {
+        self.outpost_height_phase_scores = [0.0; 6];
+        self.outpost_height_phase_observations = 0;
+        self.outpost_height_phase = None;
+        self.outpost_height_phase_id_samples.clear();
+        self.outpost_height_phase_id_counts = [0; 3];
+        for samples in &mut self.outpost_height_phase_center_samples {
+            samples.clear();
+        }
+    }
+
+    fn outpost_height_phase_locked(&self) -> bool {
+        self.is_outpost && self.outpost_height_phase.is_some()
+    }
+
+    fn outpost_height_offset_for_id(&self, id: usize) -> f64 {
+        self.outpost_height_phase
+            .and_then(|phase| outpost_height_offset_from_phase(phase, id))
+            .unwrap_or(0.0)
+    }
+
+    fn apply_locked_outpost_height_offsets(&mut self) {
+        if !self.outpost_height_phase_locked() {
+            return;
+        }
+        self.x[DELTA_RADIUS] = self.outpost_height_offset_for_id(1);
+        self.x[HEIGHT_DIFF] = self.outpost_height_offset_for_id(2);
+        self.p[(DELTA_RADIUS, DELTA_RADIUS)] = OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2;
+        self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] = OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2;
+    }
+
+    fn update_outpost_height_phase(&mut self, observation: &YpdObservation, matched_id: usize) {
+        if !self.is_outpost || matched_id >= 3 || !observation.position_mm.z.is_finite() {
+            return;
+        }
+
+        self.outpost_height_phase_id_samples.push_back(matched_id);
+        self.outpost_height_phase_id_counts[matched_id] += 1;
+        for phase in 0..OUTPOST_HEIGHT_RANK_CANDIDATES.len() {
+            let center_z = observation.position_mm.z
+                - outpost_height_offset_from_phase(phase, matched_id).unwrap_or(0.0);
+            self.outpost_height_phase_center_samples[phase].push_back(center_z);
+        }
+
+        while self.outpost_height_phase_id_samples.len() > OUTPOST_HEIGHT_PHASE_CENTER_CAPACITY {
+            if let Some(old_id) = self.outpost_height_phase_id_samples.pop_front()
+                && old_id < self.outpost_height_phase_id_counts.len()
+            {
+                self.outpost_height_phase_id_counts[old_id] =
+                    self.outpost_height_phase_id_counts[old_id].saturating_sub(1);
+            }
+            for samples in &mut self.outpost_height_phase_center_samples {
+                samples.pop_front();
+            }
+        }
+
+        self.outpost_height_phase_observations = self.outpost_height_phase_id_samples.len();
+        let mut candidate_center_z = [f64::NAN; 6];
+        for (phase, center_slot) in candidate_center_z
+            .iter_mut()
+            .enumerate()
+            .take(self.outpost_height_phase_scores.len())
+        {
+            let (score, center_z) = self.outpost_height_phase_score_from_samples(phase);
+            self.outpost_height_phase_scores[phase] = score;
+            *center_slot = center_z;
+        }
+
+        if self.outpost_height_phase_locked()
+            || self.outpost_height_phase_observations < OUTPOST_HEIGHT_PHASE_MIN_CENTER_SAMPLES
+            || !self.outpost_height_phase_has_enough_id_coverage()
+        {
+            return;
+        }
+
+        let mut phases: Vec<_> = (0..self.outpost_height_phase_scores.len()).collect();
+        phases.sort_by(|lhs, rhs| {
+            self.outpost_height_phase_scores[*lhs]
+                .total_cmp(&self.outpost_height_phase_scores[*rhs])
+        });
+        let best = phases[0];
+        let second = phases[1];
+        let margin =
+            self.outpost_height_phase_scores[second] - self.outpost_height_phase_scores[best];
+        if candidate_center_z[best].is_finite() && margin >= OUTPOST_HEIGHT_PHASE_LOCK_MARGIN {
+            self.outpost_height_phase = Some(best);
+            self.x[4] = candidate_center_z[best];
+            self.apply_locked_outpost_height_offsets();
+        }
+    }
+
+    fn outpost_height_phase_score_from_samples(&self, phase: usize) -> (f64, f64) {
+        let Some(center_z) = median_value(
+            self.outpost_height_phase_center_samples[phase]
+                .iter()
+                .copied(),
+        ) else {
+            return (f64::INFINITY, f64::NAN);
+        };
+        let sigma_sq = OUTPOST_HEIGHT_PHASE_SIGMA_MM * OUTPOST_HEIGHT_PHASE_SIGMA_MM;
+        let mut score = 0.0;
+        let mut count = 0;
+        for sample in &self.outpost_height_phase_center_samples[phase] {
+            if !sample.is_finite() {
+                continue;
+            }
+            let residual = sample - center_z;
+            score += residual * residual / sigma_sq;
+            count += 1;
+        }
+        if count > 0 {
+            (score, center_z)
+        } else {
+            (f64::INFINITY, f64::NAN)
+        }
+    }
+
+    fn outpost_height_phase_has_enough_id_coverage(&self) -> bool {
+        self.outpost_height_phase_id_counts
+            .iter()
+            .all(|count| *count >= OUTPOST_HEIGHT_PHASE_MIN_SAMPLES_PER_ID)
+    }
+
+    fn apply_outpost_radius_prior(&mut self) {
+        if !self.is_outpost {
+            return;
+        }
+        let prior_variance = OUTPOST_RADIUS_PRIOR_SIGMA_MM * OUTPOST_RADIUS_PRIOR_SIGMA_MM;
+        let innovation_variance = self.p[(PRIMARY_RADIUS, PRIMARY_RADIUS)] + prior_variance;
+        if !innovation_variance.is_finite() || innovation_variance <= 1e-9 {
+            return;
+        }
+
+        let k = self.p.column(PRIMARY_RADIUS) / innovation_variance;
+        self.x += k * (OUTPOST_RADIUS_MM - self.x[PRIMARY_RADIUS]);
+        self.x[6] = normalize_angle(self.x[6]);
+
+        let mut i_kh = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::identity();
+        for row in 0..STATE_DIM {
+            i_kh[(row, PRIMARY_RADIUS)] -= k[row];
+        }
+        let rk = prior_variance * (k * k.transpose());
+        self.p = symmetrize(i_kh * self.p * i_kh.transpose() + rk);
     }
 
     fn append_motion_sample(&mut self) {
@@ -620,6 +996,22 @@ fn radial_sign(armor_num: usize) -> f64 {
     if armor_num == 3 { 1.0 } else { -1.0 }
 }
 
+fn radial_yaw_from_observed_yaw(observed_yaw: f64, armor_num: usize) -> f64 {
+    if armor_num == 3 {
+        normalize_angle(observed_yaw + OUTPOST_PLANE_TO_RADIAL_YAW_OFFSET_RAD)
+    } else {
+        normalize_angle(observed_yaw)
+    }
+}
+
+fn observed_yaw_from_radial_yaw(radial_yaw: f64, armor_num: usize) -> f64 {
+    if armor_num == 3 {
+        normalize_angle(radial_yaw - OUTPOST_PLANE_TO_RADIAL_YAW_OFFSET_RAD)
+    } else {
+        normalize_angle(radial_yaw)
+    }
+}
+
 fn radius_from_state(state: &na::SVector<f64, STATE_DIM>, armor_num: usize, id: usize) -> f64 {
     if armor_num == 4 && (id == 1 || id == 3) {
         state[PRIMARY_RADIUS] + state[DELTA_RADIUS]
@@ -646,6 +1038,13 @@ fn height_offset_from_state(
     } else {
         0.0
     }
+}
+
+fn outpost_height_offset_from_phase(phase: usize, id: usize) -> Option<f64> {
+    OUTPOST_HEIGHT_RANK_CANDIDATES
+        .get(phase)
+        .and_then(|candidate| candidate.get(id))
+        .map(|rank| f64::from(*rank) * OUTPOST_HEIGHT_STEP_MM)
 }
 
 fn normalize_angle(angle: f64) -> f64 {
@@ -685,6 +1084,20 @@ fn xyz_to_ypd_jacobian(position: na::Point3<f64>) -> na::SMatrix<f64, 3, 3> {
         y / xyz_sq.sqrt(),
         z / xyz_sq.sqrt(),
     ])
+}
+
+fn median_value(values: impl Iterator<Item = f64>) -> Option<f64> {
+    let mut values: Vec<_> = values.filter(|value| value.is_finite()).collect();
+    if values.is_empty() {
+        return None;
+    }
+    values.sort_by(f64::total_cmp);
+    let mid = values.len() / 2;
+    if values.len() % 2 == 0 {
+        Some((values[mid - 1] + values[mid]) * 0.5)
+    } else {
+        Some(values[mid])
+    }
 }
 
 fn linear_slope_abs(samples: impl Iterator<Item = (f64, f64)>) -> f64 {
@@ -741,6 +1154,25 @@ fn quadratic_accel(samples: impl Iterator<Item = (f64, f64)>) -> f64 {
 mod tests {
     use super::*;
 
+    fn estimator_cfg() -> EstimatorCfg {
+        toml::from_str(
+            "\
+armor_lost_wait_duration_ms = 100
+enemy_lost_wait_duration_ms = 1000
+ypd_geometry_recovery_window_frames = 24
+ypd_geometry_recovery_cooldown_frames = 12
+ypd_geometry_recovery_mismatch_required_streak = 2
+ypd_geometry_recovery_min_matched_count = 2
+ypd_geometry_recovery_z_sigma_threshold = 3.0
+ypd_geometry_recovery_xy_sigma_threshold = 2.0
+ypd_geometry_recovery_cov_inflation_scale = 48.0
+ypd_geometry_recovery_min_dr_variance = 0.0025
+ypd_geometry_recovery_min_h_variance = 0.000625
+",
+        )
+        .unwrap()
+    }
+
     fn observation(center: na::Point3<f64>, yaw: f64, radius: f64) -> YpdObservation {
         let position = na::Point3::new(
             center.x - radius * yaw.cos(),
@@ -755,6 +1187,27 @@ mod tests {
         }
     }
 
+    fn outpost_phase_observation(center_z: f64, phase: usize, id: usize) -> YpdObservation {
+        let radial_yaw = id as f64 * std::f64::consts::TAU / 3.0;
+        let position = na::Point3::new(
+            1_000.0 + OUTPOST_RADIUS_MM * radial_yaw.cos(),
+            OUTPOST_RADIUS_MM * radial_yaw.sin(),
+            center_z + outpost_height_offset_from_phase(phase, id).unwrap(),
+        );
+        YpdObservation {
+            position_mm: position,
+            yaw_rad: observed_yaw_from_radial_yaw(radial_yaw, 3),
+            image_center: na::Point2::new(320.0, 520.0),
+            radius_hint_mm: OUTPOST_RADIUS_MM,
+        }
+    }
+
+    fn initialize_outpost_tracker() -> YpdAngleTracker {
+        let mut tracker = YpdAngleTracker::new();
+        tracker.init(&outpost_phase_observation(200.0, 0, 0), 3);
+        tracker
+    }
+
     #[test]
     fn batch_update_assigns_unique_armor_ids() {
         let center = na::Point3::new(1_000.0, 0.0, 100.0);
@@ -766,7 +1219,7 @@ mod tests {
             observation(center, 0.0, 200.0),
             observation(center, std::f64::consts::FRAC_PI_2, 200.0),
         ];
-        tracker.update_batch(&observations, Some(0));
+        tracker.update_batch(&observations, Some(0), &estimator_cfg());
 
         assert_eq!(tracker.last_batch_match_ids().len(), 2);
         assert_ne!(
@@ -788,5 +1241,101 @@ mod tests {
 
         assert!((snapshot.state11d[0] - 1_005.0).abs() < 1e-6);
         assert!((snapshot.state11d[6] - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn geometry_recovery_inflates_dr_and_height_covariance_after_mismatch() {
+        let cfg = estimator_cfg();
+        let center = na::Point3::new(1_000.0, 0.0, 100.0);
+        let mut tracker = YpdAngleTracker::new();
+        tracker.init(&observation(center, 0.0, 200.0), 4);
+        tracker.p[(DELTA_RADIUS, DELTA_RADIUS)] = 10.0;
+        tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)] = 10.0;
+        let before_dr = tracker.p[(DELTA_RADIUS, DELTA_RADIUS)];
+        let before_h = tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)];
+        let mismatched = [
+            observation(na::Point3::new(1_000.0, 0.0, 260.0), 0.0, 320.0),
+            observation(
+                na::Point3::new(1_000.0, 0.0, 260.0),
+                std::f64::consts::FRAC_PI_2,
+                320.0,
+            ),
+        ];
+
+        tracker.note_observation_jump(true, &cfg);
+        tracker.update_batch(&mismatched, Some(0), &cfg);
+        tracker.note_observation_jump(true, &cfg);
+        tracker.update_batch(&mismatched, Some(0), &cfg);
+
+        assert!(tracker.p[(DELTA_RADIUS, DELTA_RADIUS)] > before_dr);
+        assert!(tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)] > before_h);
+    }
+
+    #[test]
+    fn outpost_observed_yaw_converts_to_radial_state_and_back() {
+        let observed_yaw = 0.25;
+        let mut tracker = YpdAngleTracker::new();
+        let obs = YpdObservation {
+            position_mm: na::Point3::new(1_000.0, 0.0, 100.0),
+            yaw_rad: observed_yaw,
+            image_center: na::Point2::new(320.0, 500.0),
+            radius_hint_mm: OUTPOST_RADIUS_MM,
+        };
+
+        tracker.init(&obs, 3);
+        let snapshot = tracker.snapshot().unwrap();
+
+        assert!(
+            (normalize_angle(snapshot.state11d[6] - observed_yaw)
+                - OUTPOST_PLANE_TO_RADIAL_YAW_OFFSET_RAD)
+                .abs()
+                < 1e-9
+        );
+        assert!((snapshot.tracked_armor_xyza[3] - observed_yaw).abs() < 1e-9);
+    }
+
+    #[test]
+    fn outpost_height_phase_locks_offsets_and_freezes_jacobian() {
+        let mut tracker = initialize_outpost_tracker();
+        let phase = 0;
+        for round in 0..OUTPOST_HEIGHT_PHASE_MIN_CENTER_SAMPLES {
+            let id = round % 3;
+            tracker.update_outpost_height_phase(&outpost_phase_observation(200.0, phase, id), id);
+        }
+
+        assert_eq!(tracker.outpost_height_phase, Some(phase));
+        assert_eq!(
+            tracker.x[DELTA_RADIUS],
+            outpost_height_offset_from_phase(phase, 1).unwrap()
+        );
+        assert_eq!(
+            tracker.x[HEIGHT_DIFF],
+            outpost_height_offset_from_phase(phase, 2).unwrap()
+        );
+        assert_eq!(
+            tracker.p[(DELTA_RADIUS, DELTA_RADIUS)],
+            OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2
+        );
+
+        let h_id1 = tracker.measurement_jacobian(&tracker.x, 1);
+        let h_id2 = tracker.measurement_jacobian(&tracker.x, 2);
+        assert_eq!(h_id1[(2, DELTA_RADIUS)], 0.0);
+        assert_eq!(h_id2[(2, HEIGHT_DIFF)], 0.0);
+    }
+
+    #[test]
+    fn outpost_low_image_primary_only_skips_secondary_observations() {
+        let cfg = estimator_cfg();
+        let mut tracker = initialize_outpost_tracker();
+        let mut primary = outpost_phase_observation(200.0, 0, 0);
+        primary.image_center.y = 500.0;
+        let mut secondary = outpost_phase_observation(200.0, 0, 1);
+        secondary.image_center.y = 650.0;
+
+        tracker.update_batch(&[primary, secondary], Some(0), &cfg);
+
+        assert_eq!(tracker.last_batch_match_ids().len(), 2);
+        assert!(tracker.last_batch_match_ids()[0] >= 0);
+        assert_eq!(tracker.last_batch_match_ids()[1], -1);
     }
 }

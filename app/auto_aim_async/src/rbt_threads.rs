@@ -30,6 +30,9 @@ use lib::{
         rbt_queue_async::RbtSPSCQueueAsync,
     },
     rbt_mod::{
+        rbt_comm::rbt_comm_device::rbt_can::{
+            FeedbackPairDecoder, SocketCanDevice, control_to_can_payload,
+        },
         rbt_comm::rbt_comm_frame::{
             AimingState, CAN_FRAME_SIZE, CONTROL_LOOP_PERIOD_MS, CtrlData,
             DEFAULT_BULLET_SPEED_MPS, FEEDBACK_STALE_TIMEOUT_MS, SelfFraction, SensData,
@@ -53,6 +56,7 @@ const DEFAULT_VIDEO_FILE: &str = "offline_capture_bundle_outpost_rot180.avi";
 const RAW_RGB_CHANNELS: usize = 3;
 const FIRE_CONTROL_SNAPSHOT_STALE_MS: f64 = 180.0;
 const CONTROL_STATUS_LOG_PERIOD_TICKS: u64 = 50;
+const CAN_IO_POP_TIMEOUT_MS: u64 = 20;
 const PIPELINE_POP_TIMEOUT_MS: u64 = 100;
 const RERUN_FILTER_RAW_CENTER_COLOR: u32 = 0xFFBE14FF;
 const RERUN_FILTER_RAW_ARMOR_COLOR: u32 = 0xFF5014FF;
@@ -1302,6 +1306,7 @@ pub fn control_loop_250hz(
     track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
     energy_track_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismTrackPacket>>,
     feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
+    control_tx_queue: Arc<RbtSPSCQueueAsync<CtrlData>>,
     runtime_router: RuntimeRouter,
     runtime_queues: RuntimePipelineQueues,
     completion: RuntimePipelineCompletion,
@@ -1393,6 +1398,7 @@ pub fn control_loop_250hz(
                 if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
                     warn!("control_loop_250hz: failed to serialize energy mechanism frame: {err}");
                 }
+                control_tx_queue.push_latest(control_data);
                 tick_count = tick_count.wrapping_add(1);
                 frame_seq = frame_seq.wrapping_add(1);
                 if tick_count == 1 || tick_count.is_multiple_of(CONTROL_STATUS_LOG_PERIOD_TICKS) {
@@ -1423,6 +1429,7 @@ pub fn control_loop_250hz(
                 if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
                     warn!("control_loop_250hz: failed to serialize disabled-route frame: {err}");
                 }
+                control_tx_queue.push_latest(control_data);
                 tick_count = tick_count.wrapping_add(1);
                 frame_seq = frame_seq.wrapping_add(1);
                 if tick_count == 1 || tick_count.is_multiple_of(CONTROL_STATUS_LOG_PERIOD_TICKS) {
@@ -1453,6 +1460,7 @@ pub fn control_loop_250hz(
             if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
                 warn!("control_loop_250hz: failed to serialize control frame: {err}");
             }
+            control_tx_queue.push_latest(control_data);
 
             tick_count = tick_count.wrapping_add(1);
             frame_seq = frame_seq.wrapping_add(1);
@@ -1495,6 +1503,90 @@ pub fn control_loop_250hz(
                     control_data.shot_mode,
                     payload,
                 );
+            }
+        }
+    })
+}
+
+pub fn can_io_process(
+    control_tx_queue: Arc<RbtSPSCQueueAsync<CtrlData>>,
+    feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
+    cfg: RbtCfg,
+    completion: RuntimePipelineCompletion,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        if !cfg.general_cfg.can_enabled {
+            info!("can_io_process: CAN disabled by config");
+            return;
+        }
+
+        let interface = cfg.general_cfg.can_interface.clone();
+        let device = match SocketCanDevice::open(&interface) {
+            Ok(device) => device,
+            Err(err) => {
+                error!("can_io_process: failed to open SocketCAN interface {interface}: {err}");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                return;
+            }
+        };
+        info!("can_io_process: opened SocketCAN interface {interface}");
+
+        let mut feedback_decoder = FeedbackPairDecoder::new();
+        let mut frame_seq = 0_u8;
+        let mut rx_count = 0_u64;
+        let mut tx_count = 0_u64;
+
+        loop {
+            if completion.armor_estimate_done()
+                && completion.energy_estimate_done()
+                && control_tx_queue.is_empty()
+            {
+                info!(
+                    "can_io_process: stopping after tx={} rx={}",
+                    tx_count, rx_count
+                );
+                break;
+            }
+
+            tokio::select! {
+                frame = device.receive() => {
+                    match frame {
+                        Ok(frame) => {
+                            match feedback_decoder.push(frame, StdInstant::now()) {
+                                Ok(Some(feedback)) => {
+                                    rx_count = rx_count.wrapping_add(1);
+                                    feedback_queue.push_latest(feedback);
+                                }
+                                Ok(None) => {}
+                                Err(err) => warn!("can_io_process: dropped corrupted feedback pair: {err}"),
+                            }
+                        }
+                        Err(err) => {
+                            error!("can_io_process: CAN receive failed: {err}");
+                            IS_RUNNING.store(false, Ordering::SeqCst);
+                            break;
+                        }
+                    }
+                }
+                control = pop_latest_until_running(
+                    &control_tx_queue,
+                    Duration::from_millis(CAN_IO_POP_TIMEOUT_MS),
+                ) => {
+                    if let Some(control) = control {
+                        match control_to_can_payload(control, frame_seq) {
+                            Ok(payload) => {
+                                if let Err(err) = device.send(payload).await {
+                                    error!("can_io_process: CAN send failed: {err}");
+                                    IS_RUNNING.store(false, Ordering::SeqCst);
+                                    break;
+                                }
+                                tx_count = tx_count.wrapping_add(1);
+                                frame_seq = frame_seq.wrapping_add(1);
+                            }
+                            Err(err) => warn!("can_io_process: failed to serialize control frame: {err}"),
+                        }
+                    }
+                }
             }
         }
     })
