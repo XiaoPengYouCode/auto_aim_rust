@@ -117,6 +117,10 @@ pub struct EnergyMechanismTracker {
     /// 大符曲线 EKF。小符时为 `None`；大符时持有并承担相位/曲线预测。
     curve_eskf: Option<BigBuffCurveEskf>,
     lost_timeout_s: f64,
+    /// 大符专用丢失超时（比小符更短，激活时目标扇叶会熄灭切换）。
+    big_lost_timeout_s: f64,
+    /// 大符模型完全重置超时：丢失超过这个时间才清掉曲线 EKF，避免短暂遮挡就重学。
+    big_model_reset_timeout_s: f64,
     /// 保存构造时的 tracker 配置，模式切换到 Large 时用它重建曲线 EKF，
     /// 避免从 Small 切 Large 时丢失 rbt_cfg.toml 里的大符参数。
     tracker_cfg: EnergyMechanismTrackerCfg,
@@ -145,6 +149,8 @@ impl EnergyMechanismTracker {
             last_target_switched: false,
             curve_eskf: None,
             lost_timeout_s: 0.35,
+            big_lost_timeout_s: 0.08,
+            big_model_reset_timeout_s: 0.35,
             tracker_cfg: EnergyMechanismTrackerCfg::default(),
         }
     }
@@ -153,6 +159,11 @@ impl EnergyMechanismTracker {
     pub fn from_tracker_cfg(mode: EnergyMechanismMode, cfg: &EnergyMechanismTrackerCfg) -> Self {
         let mut tracker = Self::new(mode);
         tracker.lost_timeout_s = cfg.lost_timeout_s.max(0.0);
+        tracker.big_lost_timeout_s = cfg.big_lost_timeout_s.max(0.0);
+        // model reset timeout 必须 >= lost timeout，否则会在 lost 之前就重置。
+        tracker.big_model_reset_timeout_s = cfg
+            .big_model_reset_timeout_s
+            .max(tracker.big_lost_timeout_s);
         tracker.tracker_cfg = cfg.clone();
         if mode == EnergyMechanismMode::Large {
             tracker.curve_eskf = Some(BigBuffCurveEskf::from_tracker_cfg(cfg));
@@ -162,9 +173,13 @@ impl EnergyMechanismTracker {
 
     pub fn reset(&mut self, mode: EnergyMechanismMode) {
         let lost_timeout_s = self.lost_timeout_s;
+        let big_lost_timeout_s = self.big_lost_timeout_s;
+        let big_model_reset_timeout_s = self.big_model_reset_timeout_s;
         let tracker_cfg = self.tracker_cfg.clone();
         let mut next = Self::new(mode);
         next.lost_timeout_s = lost_timeout_s;
+        next.big_lost_timeout_s = big_lost_timeout_s;
+        next.big_model_reset_timeout_s = big_model_reset_timeout_s;
         next.tracker_cfg = tracker_cfg;
         if mode == EnergyMechanismMode::Large {
             // 始终用保存的真实配置重建曲线 EKF，避免 Small→Large 切换时丢 rbt_cfg.toml 参数。
@@ -192,6 +207,19 @@ impl EnergyMechanismTracker {
         self.last_switch_deferred = false;
         self.last_target_switched = false;
 
+        // target 缺失时按 mode 判定丢失，大符长时间丢失则清掉曲线 EKF。
+        if target.is_none()
+            && self.mode == EnergyMechanismMode::Large
+            && self
+                .last_seen_tp
+                .map(|last| now.duration_since(last).as_secs_f64())
+                .unwrap_or(f64::INFINITY)
+                > self.big_model_reset_timeout_s
+            && let Some(eskf) = &mut self.curve_eskf
+        {
+            eskf.reset();
+        }
+
         if let Some(target) = target {
             if self.mode == EnergyMechanismMode::Large
                 && self.should_defer_target_switch(target)
@@ -216,7 +244,12 @@ impl EnergyMechanismTracker {
             .last_seen_tp
             .map(|last| now.duration_since(last).as_secs_f64())
             .unwrap_or(f64::INFINITY);
-        let lost = state_age_s > self.lost_timeout_s;
+        // 大符用更短的 big_lost_timeout_s 判 lost（激活时目标切换快）。
+        let lost_timeout = match self.mode {
+            EnergyMechanismMode::Large => self.big_lost_timeout_s,
+            EnergyMechanismMode::Small => self.lost_timeout_s,
+        };
+        let lost = state_age_s > lost_timeout;
         let curve = self.curve_eskf.as_ref().map(|eskf| CurveSnapshot {
             phase: eskf.phase(),
             a: eskf.a(),
@@ -596,6 +629,26 @@ mod tests {
         tracker.reset(EnergyMechanismMode::Large);
         assert!(tracker.curve_eskf.is_some());
         assert!((tracker.tracker_cfg.big_a_process_noise - 0.007).abs() < 1e-9);
+    }
+
+    #[test]
+    fn from_tracker_cfg_reads_big_timeout_fields() {
+        let mut cfg = default_tracker_cfg();
+        cfg.big_lost_timeout_s = 0.05;
+        cfg.big_model_reset_timeout_s = 0.4;
+        let tracker = EnergyMechanismTracker::from_tracker_cfg(EnergyMechanismMode::Large, &cfg);
+        assert!((tracker.big_lost_timeout_s - 0.05).abs() < 1e-9);
+        assert!((tracker.big_model_reset_timeout_s - 0.4).abs() < 1e-9);
+    }
+
+    #[test]
+    fn big_model_reset_timeout_clamped_above_big_lost_timeout() {
+        // model reset timeout 必须 >= big_lost_timeout，配置里写更小值时自动抬升。
+        let mut cfg = default_tracker_cfg();
+        cfg.big_lost_timeout_s = 0.3;
+        cfg.big_model_reset_timeout_s = 0.1; // 比 big_lost 还小
+        let tracker = EnergyMechanismTracker::from_tracker_cfg(EnergyMechanismMode::Large, &cfg);
+        assert!(tracker.big_model_reset_timeout_s >= tracker.big_lost_timeout_s);
     }
 
     #[test]

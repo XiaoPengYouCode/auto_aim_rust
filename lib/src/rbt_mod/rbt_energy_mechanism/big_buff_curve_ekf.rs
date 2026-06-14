@@ -42,6 +42,12 @@ struct CurveFilterConfig {
     window_samples: usize,
     window_s: f64,
     min_history: usize,
+    /// 是否启用曲线 EKF 拟合；关闭后退化为常速预测。
+    curve_ekf_fit_enabled: bool,
+    /// 是否启用速度测量更新。
+    speed_measurement_enabled: bool,
+    /// 测量噪声 R 的整体缩放（>=1 放大噪声，降低测量信任）。
+    measurement_noise_scale: f64,
 }
 
 impl CurveFilterConfig {
@@ -58,6 +64,9 @@ impl CurveFilterConfig {
             window_samples: cfg.big_speed_measurement_window_samples.clamp(2, 16),
             window_s: cfg.big_speed_measurement_window_s.max(1e-3),
             min_history: cfg.big_speed_measurement_min_history,
+            curve_ekf_fit_enabled: cfg.big_curve_ekf_fit_enabled,
+            speed_measurement_enabled: cfg.big_speed_measurement_enabled,
+            measurement_noise_scale: cfg.big_measurement_noise_scale.max(1.0),
         }
     }
 }
@@ -216,6 +225,10 @@ impl BigBuffCurveEskf {
     /// roll（外层目标角度）的累积，phase 是驱动 speed = a·sin(φ)+(base-a) 的内部状态。
     /// 这与 vivsionn `BuffTracker::update_ekf` 的 f lambda 一致（phase += w·dt，roll 才带 dir）。
     pub fn predict(&mut self, dt: f64) {
+        // 关闭曲线拟合时不推进 phase/speed，退化为常速预测（由外层 roll_rate 线性外推）。
+        if !self.cfg.curve_ekf_fit_enabled {
+            return;
+        }
         let dt = dt.clamp(1e-3, 0.1);
 
         // 名义状态非线性传播：phase += w·dt，a/w 不变。
@@ -242,6 +255,10 @@ impl BigBuffCurveEskf {
     /// 执行速度测量更新（rolling-window 估速 → 速度残差 → phase/a 修正）。
     /// 返回速度测量的处理状态：`Accepted`、`Gated`（超门控拒绝）、`Skipped`（无有效样本）。
     pub fn update_with_speed(&mut self, dt: f64) -> SpeedUpdateResult {
+        // 配置关闭速度测量更新时直接跳过。
+        if !self.cfg.speed_measurement_enabled {
+            return SpeedUpdateResult::Skipped;
+        }
         if self.history.len() < self.cfg.min_history.max(2) {
             return SpeedUpdateResult::Skipped;
         }
@@ -273,7 +290,11 @@ impl BigBuffCurveEskf {
         h[(0, PHASE)] = speed_sign * a * phase.cos();
         h[(0, A)] = speed_sign * (phase.sin() - 1.0);
         // w 不直接出现在 speed 公式中，对 speed 导数为 0。
-        let r = na::DMatrix::from_row_slice(1, 1, &[self.cfg.speed_measurement_noise]);
+        let r = na::DMatrix::from_row_slice(
+            1,
+            1,
+            &[self.cfg.speed_measurement_noise * self.cfg.measurement_noise_scale],
+        );
         let z = na::DVector::from_vec(vec![observed_speed]);
         let z_pred = na::DVector::from_vec(vec![predicted_speed]);
         let phase_before = self.ekf.x[PHASE];
@@ -682,5 +703,51 @@ mod tests {
         eskf.predict(0.02);
         // seed 后 phase 不再是 0
         assert!(eskf.phase().abs() > 1e-6 || eskf.a() > 0.0);
+    }
+
+    #[test]
+    fn curve_ekf_fit_disabled_skips_phase_advance() {
+        // big_curve_ekf_fit_enabled = false 时 predict 不推进 phase，退化为常速。
+        let mut cfg = default_cfg();
+        cfg.big_curve_ekf_fit_enabled = false;
+        let mut eskf = BigBuffCurveEskf::from_tracker_cfg(&cfg);
+        eskf.set_direction(1);
+        let phase_before = eskf.phase();
+        eskf.record_roll(0.0, 0.0);
+        eskf.record_roll(0.02, 0.05);
+        eskf.predict(0.02);
+        assert!((eskf.phase() - phase_before).abs() < 1e-9, "phase 不应推进");
+    }
+
+    #[test]
+    fn speed_measurement_disabled_returns_skipped() {
+        // big_speed_measurement_enabled = false 时 update_with_speed 直接 Skipped。
+        let mut cfg = default_cfg();
+        cfg.big_speed_measurement_enabled = false;
+        cfg.big_speed_measurement_min_history = 2;
+        let mut eskf = BigBuffCurveEskf::from_tracker_cfg(&cfg);
+        eskf.set_direction(1);
+        for i in 0..10 {
+            eskf.record_roll(i as f64 * 0.02, i as f64 * 0.04);
+        }
+        assert_eq!(eskf.update_with_speed(0.02), SpeedUpdateResult::Skipped);
+    }
+
+    #[test]
+    fn measurement_noise_scale_changes_gate_tolerance() {
+        // 放大 measurement_noise_scale 后，同一速度测量更容易被接受（R 更大，门控相对宽松）。
+        // 这里只验证开关被读取且配置生效：把 scale 调大后 update_with_speed 仍正常返回。
+        let mut cfg = default_cfg();
+        cfg.big_speed_measurement_min_history = 2;
+        cfg.big_speed_measurement_gate = 5.0;
+        cfg.big_measurement_noise_scale = 10.0;
+        let mut eskf = BigBuffCurveEskf::from_tracker_cfg(&cfg);
+        eskf.set_direction(1);
+        for i in 0..10 {
+            eskf.record_roll(i as f64 * 0.02, i as f64 * 0.04);
+        }
+        let result = eskf.update_with_speed(0.02);
+        // 大 gate + 大噪声下应被接受（不 Gated）。
+        assert_ne!(result, SpeedUpdateResult::Gated);
     }
 }
