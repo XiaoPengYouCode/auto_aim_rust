@@ -9,16 +9,18 @@ use std::sync::{Arc, RwLock};
 use crate::rbt_mod::rbt_comm::rbt_comm_frame::{SensData, TaskMode};
 use crate::rbt_mod::rbt_mode_context::{ModeContext, ModeRoute, ModeUpdate};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RuntimeRouteState {
     pub route: ModeRoute,
+    pub task_mode: TaskMode,
     pub transition_seq: u64,
 }
 
 impl RuntimeRouteState {
-    fn new(route: ModeRoute, transition_seq: u64) -> Self {
+    fn new(route: ModeRoute, task_mode: TaskMode, transition_seq: u64) -> Self {
         Self {
             route,
+            task_mode,
             transition_seq,
         }
     }
@@ -29,6 +31,10 @@ impl RuntimeRouteState {
 
     pub fn fire_control_active(self) -> bool {
         matches!(self.route, ModeRoute::AutoShot | ModeRoute::Outpost)
+    }
+
+    pub fn energy_mechanism_active(self) -> bool {
+        matches!(self.route, ModeRoute::EnergyMechanism)
     }
 }
 
@@ -55,7 +61,7 @@ impl RuntimeRouter {
         Self {
             inner: Arc::new(RwLock::new(RuntimeRouterInner {
                 mode_context: ModeContext::with_initial_task_mode(initial_task_mode),
-                state: RuntimeRouteState::new(route, 0),
+                state: RuntimeRouteState::new(route, initial_task_mode, 0),
             })),
         }
     }
@@ -65,6 +71,7 @@ impl RuntimeRouter {
         let update = inner.mode_context.apply_feedback(feedback);
         inner.state = RuntimeRouteState {
             route: update.route,
+            task_mode: update.task_mode,
             transition_seq: update.transition_seq,
         };
         update
@@ -108,28 +115,32 @@ mod tests {
         let state = router.state();
 
         assert_eq!(state.route, ModeRoute::AutoShot);
+        assert_eq!(state.task_mode, TaskMode::AutoShot);
         assert!(state.armor_pipeline_active());
         assert!(state.fire_control_active());
+        assert!(!state.energy_mechanism_active());
         assert_eq!(state.transition_seq, 0);
     }
 
     #[test]
-    fn applying_buff_feedback_disables_armor_and_fire_control() {
+    fn applying_energy_mechanism_feedback_disables_armor_and_fire_control() {
         let router = RuntimeRouter::default();
 
         let update = router.apply_feedback(&feedback(TaskMode::HitBigBuff));
         let state = router.state();
 
-        assert_eq!(update.transition, ModeTransition::EnterBuff);
+        assert_eq!(update.transition, ModeTransition::EnterEnergyMechanism);
         assert!(update.runtime_switch.clear_mode_queues);
-        assert_eq!(state.route, ModeRoute::Buff);
+        assert_eq!(state.route, ModeRoute::EnergyMechanism);
+        assert_eq!(state.task_mode, TaskMode::HitBigBuff);
         assert!(!state.armor_pipeline_active());
         assert!(!state.fire_control_active());
+        assert!(state.energy_mechanism_active());
         assert_eq!(state.transition_seq, 1);
     }
 
     #[test]
-    fn big_and_small_buff_share_route_without_new_transition() {
+    fn large_and_small_energy_mechanism_share_route_without_new_transition() {
         let router = RuntimeRouter::default();
 
         router.apply_feedback(&feedback(TaskMode::HitBigBuff));
@@ -137,6 +148,7 @@ mod tests {
 
         assert_eq!(update.transition, ModeTransition::Unchanged);
         assert!(!update.runtime_switch.clear_mode_queues);
+        assert_eq!(router.state().task_mode, TaskMode::HitSmallBuff);
         assert_eq!(router.state().transition_seq, 1);
     }
 }

@@ -71,7 +71,9 @@ pub enum AimingState {
 #[derive(Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum ShotBuffMode {
+    /// 电控线协议兼容名：内部能量机关模块只在通讯边界转换到该枚举。
     ShotBuffOff = 0x00,
+    /// 电控线协议兼容名：内部能量机关模块只在通讯边界转换到该枚举。
     ShotBuffOn = 0x01,
 }
 
@@ -122,7 +124,7 @@ impl ShotBuffMode {
             0x00 => ShotBuffMode::ShotBuffOff,
             0x01 => ShotBuffMode::ShotBuffOn,
             _ => {
-                warn!("Invalid shot buff mode value {}", value);
+                warn!("Invalid energy mechanism shot protocol value {}", value);
                 ShotBuffMode::ShotBuffOff
             }
         }
@@ -210,7 +212,9 @@ pub struct SensData {
 #[repr(u8)]
 pub enum TaskMode {
     AutoShot = 0x01,
+    /// 电控线协议兼容名：视觉侧映射到内部 EnergyMechanism route。
     HitBigBuff = 0x02,
+    /// 电控线协议兼容名：视觉侧映射到内部 EnergyMechanism route。
     HitSmallBuff = 0x03,
     HitOutpost = 0x04,
 }

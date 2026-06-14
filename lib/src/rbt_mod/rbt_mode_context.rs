@@ -11,7 +11,7 @@ use crate::rbt_mod::rbt_comm::rbt_comm_frame::{SensData, TaskMode};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModeRoute {
     AutoShot,
-    Buff,
+    EnergyMechanism,
     Outpost,
 }
 
@@ -19,7 +19,7 @@ impl ModeRoute {
     pub fn from_task_mode(task_mode: TaskMode) -> Self {
         match task_mode {
             TaskMode::AutoShot => Self::AutoShot,
-            TaskMode::HitBigBuff | TaskMode::HitSmallBuff => Self::Buff,
+            TaskMode::HitBigBuff | TaskMode::HitSmallBuff => Self::EnergyMechanism,
             TaskMode::HitOutpost => Self::Outpost,
         }
     }
@@ -36,12 +36,12 @@ impl ModeRoute {
         matches!(self, Self::AutoShot | Self::Outpost)
     }
 
-    pub fn buff_preprocess_active(self) -> bool {
-        matches!(self, Self::Buff)
+    pub fn energy_mechanism_preprocess_active(self) -> bool {
+        matches!(self, Self::EnergyMechanism)
     }
 
-    pub fn hit_buff_active(self) -> bool {
-        matches!(self, Self::Buff)
+    pub fn energy_mechanism_active(self) -> bool {
+        matches!(self, Self::EnergyMechanism)
     }
 }
 
@@ -49,7 +49,7 @@ impl ModeRoute {
 pub enum ModeTransition {
     Unchanged,
     EnterAutoShot,
-    EnterBuff,
+    EnterEnergyMechanism,
     EnterOutpost,
 }
 
@@ -65,8 +65,8 @@ pub struct ModeRuntimeSwitch {
     pub yolo_preprocess_active: bool,
     pub yolo_active: bool,
     pub fire_control_active: bool,
-    pub buff_preprocess_active: bool,
-    pub hit_buff_active: bool,
+    pub energy_mechanism_preprocess_active: bool,
+    pub energy_mechanism_active: bool,
 }
 
 impl ModeRuntimeSwitch {
@@ -76,8 +76,8 @@ impl ModeRuntimeSwitch {
             yolo_preprocess_active: route.yolo_preprocess_active(),
             yolo_active: route.yolo_active(),
             fire_control_active: route.fire_control_active(),
-            buff_preprocess_active: route.buff_preprocess_active(),
-            hit_buff_active: route.hit_buff_active(),
+            energy_mechanism_preprocess_active: route.energy_mechanism_preprocess_active(),
+            energy_mechanism_active: route.energy_mechanism_active(),
         }
     }
 }
@@ -148,7 +148,7 @@ impl ModeContext {
         } else {
             match route {
                 ModeRoute::AutoShot => ModeTransition::EnterAutoShot,
-                ModeRoute::Buff => ModeTransition::EnterBuff,
+                ModeRoute::EnergyMechanism => ModeTransition::EnterEnergyMechanism,
                 ModeRoute::Outpost => ModeTransition::EnterOutpost,
             }
         };
@@ -244,8 +244,8 @@ mod tests {
         assert!(update.runtime_switch.yolo_preprocess_active);
         assert!(update.runtime_switch.yolo_active);
         assert!(update.runtime_switch.fire_control_active);
-        assert!(!update.runtime_switch.buff_preprocess_active);
-        assert!(!update.runtime_switch.hit_buff_active);
+        assert!(!update.runtime_switch.energy_mechanism_preprocess_active);
+        assert!(!update.runtime_switch.energy_mechanism_active);
         assert_eq!(context.active_route(), Some(ModeRoute::AutoShot));
         assert_eq!(context.transition_seq(), 1);
         assert!(context.last_transition_at().is_some());
@@ -265,24 +265,24 @@ mod tests {
     }
 
     #[test]
-    fn entering_buff_disables_armor_pipeline_and_resets_buff_state() {
+    fn entering_energy_mechanism_disables_armor_pipeline_and_resets_energy_mechanism_state() {
         let mut context = ModeContext::new();
         context.apply_feedback(&feedback(TaskMode::AutoShot));
 
         let update = context.apply_feedback(&feedback(TaskMode::HitBigBuff));
 
-        assert_eq!(update.transition, ModeTransition::EnterBuff);
+        assert_eq!(update.transition, ModeTransition::EnterEnergyMechanism);
         assert_eq!(update.previous_task_mode, Some(TaskMode::AutoShot));
         assert!(update.runtime_switch.clear_mode_queues);
         assert!(!update.runtime_switch.yolo_active);
         assert!(!update.runtime_switch.fire_control_active);
-        assert!(update.runtime_switch.buff_preprocess_active);
-        assert!(update.runtime_switch.hit_buff_active);
-        assert_eq!(context.active_route(), Some(ModeRoute::Buff));
+        assert!(update.runtime_switch.energy_mechanism_preprocess_active);
+        assert!(update.runtime_switch.energy_mechanism_active);
+        assert_eq!(context.active_route(), Some(ModeRoute::EnergyMechanism));
     }
 
     #[test]
-    fn big_and_small_buff_are_same_runtime_route() {
+    fn large_and_small_energy_mechanism_are_same_runtime_route() {
         let mut context = ModeContext::new();
         context.apply_feedback(&feedback(TaskMode::HitBigBuff));
 
@@ -291,7 +291,7 @@ mod tests {
         assert_eq!(update.transition, ModeTransition::Unchanged);
         assert!(!update.runtime_switch.clear_mode_queues);
         assert_eq!(context.current_task_mode(), Some(TaskMode::HitSmallBuff));
-        assert_eq!(context.active_route(), Some(ModeRoute::Buff));
+        assert_eq!(context.active_route(), Some(ModeRoute::EnergyMechanism));
         assert_eq!(context.transition_seq(), 1);
     }
 
@@ -307,7 +307,7 @@ mod tests {
         assert!(update.runtime_switch.yolo_preprocess_active);
         assert!(update.runtime_switch.yolo_active);
         assert!(update.runtime_switch.fire_control_active);
-        assert!(!update.runtime_switch.buff_preprocess_active);
+        assert!(!update.runtime_switch.energy_mechanism_preprocess_active);
         assert_eq!(context.active_route(), Some(ModeRoute::Outpost));
     }
 

@@ -13,7 +13,7 @@
 1. 接收下位机反馈 `SensData`。
 2. 使用 `ModeContext` 判断当前运行路线。
 3. 在模式变化时清理旧队列、重置状态、更新 pipeline 开关。
-4. 让 frame source、armor pipeline、buff pipeline、control task 都从同一个运行时路线读取状态。
+4. 让 frame source、armor pipeline、energy mechanism pipeline、control task 都从同一个运行时路线读取状态。
 
 `RuntimeRouter` 不是全局大 Context。它不持有模型 session、不持有相机 SDK、不执行算法，只管理运行时路由和切换动作。
 
@@ -32,8 +32,8 @@ main -> ThreadManager::YoloDetect()
 - `yoloInfer0`
 - `FireControl`
 - `ControlLoop250Hz`
-- `buff_preprocess`
-- `HitBuff`
+- `energy_mechanism_preprocess`
+- `energy_mechanism_pipeline`
 - `showResult`
 
 旧仓库并不是在每次 Task Mode 改变时新起一个进程。它采用的是：
@@ -44,9 +44,9 @@ main -> ThreadManager::YoloDetect()
 
 Task Mode 变化发生在 `ThreadManager::applyTaskModeState()`：
 
-- `AUTO_SHOT`：启用装甲板 YOLO 和普通发控，关闭 Buff。
+- `AUTO_SHOT`：启用装甲板 YOLO 和普通发控，关闭能量机关。
 - `HIT_OUTPOST`：启用装甲板 YOLO 和普通发控，同时标记前哨站模式。
-- `HIT_BIG_BUFF` / `HIT_SMALL_BUFF`：启用 Buff pipeline，关闭装甲板 YOLO 和普通发控。
+- `HIT_BIG_BUFF` / `HIT_SMALL_BUFF`：启用能量机关 pipeline，关闭装甲板 YOLO 和普通发控。
 - 模式变化时清理旧队列，避免上一种模式的旧帧和旧结果进入新流程。
 - 模式变化时切换相机曝光参数。
 
@@ -77,7 +77,7 @@ Rust 仓库现在已经有：
 
 - 不实现真实 CAN 设备驱动。
 - 不封装相机 SDK。
-- 不实现 Buff 检测算法。
+- 不实现能量机关检测算法。
 - 不重写 YOLO 推理和求解逻辑。
 - 不改变 `CtrlData` / `SensData` 通讯协议。
 - 不引入每个模式一个进程的架构。
@@ -148,12 +148,12 @@ pub enum TaskMode {
 ```rust
 pub enum ModeRoute {
     AutoShot,
-    Buff,
+    EnergyMechanism,
     Outpost,
 }
 ```
 
-`HitBigBuff` 和 `HitSmallBuff` 都映射到 `ModeRoute::Buff`。
+`HitBigBuff` 和 `HitSmallBuff` 是电控线协议兼容名，视觉侧都映射到 `ModeRoute::EnergyMechanism`。
 
 ### ModeContext
 
@@ -188,30 +188,30 @@ flowchart TD
     AS --> EST["estimator"]
     EST --> AFC["armor_fire_control"]
 
-    FD -->|Buff| BP["buff_preprocess"]
-    BP --> BPL["buff_pipeline"]
-    BPL --> BFC["buff_control"]
+    FD -->|EnergyMechanism| EP["energy_mechanism_preprocess"]
+    EP --> EPL["energy_mechanism_pipeline"]
+    EPL --> EFC["energy_mechanism_control"]
 
     AFC --> TX["control_tx_task"]
-    BFC --> TX
+    EFC --> TX
 ```
 
 ## 模式映射
 
-| TaskMode | ModeRoute | Armor Pipeline | Buff Pipeline | FireControl | 切换动作 |
+| TaskMode | ModeRoute | Armor Pipeline | Energy Mechanism Pipeline | FireControl | 切换动作 |
 | --- | --- | --- | --- | --- | --- |
-| `AutoShot` | `AutoShot` | 开 | 关 | 开 | 清旧队列，重置 Buff，切普通曝光 |
-| `HitOutpost` | `Outpost` | 开 | 关 | 开 | 清旧队列，重置 Buff，切前哨站曝光 |
-| `HitBigBuff` | `Buff` | 关 | 开 | 关 | 清旧队列，重置 Buff，切 Buff 曝光 |
-| `HitSmallBuff` | `Buff` | 关 | 开 | 关 | 清旧队列，重置 Buff，切 Buff 曝光 |
+| `AutoShot` | `AutoShot` | 开 | 关 | 开 | 清旧队列，重置能量机关，切普通曝光 |
+| `HitOutpost` | `Outpost` | 开 | 关 | 开 | 清旧队列，重置能量机关，切前哨站曝光 |
+| `HitBigBuff` | `EnergyMechanism` | 关 | 开 | 能量机关发控 | 清旧队列，重置能量机关，切能量机关曝光 |
+| `HitSmallBuff` | `EnergyMechanism` | 关 | 开 | 能量机关发控 | 清旧队列，重置能量机关，切能量机关曝光 |
 
-如果已经处在 `Buff` route 内，`HitBigBuff` 和 `HitSmallBuff` 之间切换默认不触发完整 runtime transition。
+如果已经处在 `EnergyMechanism` route 内，`HitBigBuff` 和 `HitSmallBuff` 之间切换默认不触发完整 runtime transition。
 
 理由：
 
-- 两者共享 Buff pipeline。
-- 频繁清空 Buff 状态可能影响连续预测。
-- 如果后续实测大小符需要不同 tracker 状态，再把 `Buff` 拆成两个 route。
+- 两者共享能量机关 pipeline。
+- 频繁清空能量机关状态可能影响连续预测。
+- 如果后续实测大小能量机关需要不同 tracker 状态，再把 `EnergyMechanism` 拆成两个 route。
 
 ## API 草案
 
@@ -221,7 +221,7 @@ flowchart TD
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RuntimeSwitches {
     pub armor_enabled: bool,
-    pub buff_enabled: bool,
+    pub energy_mechanism_enabled: bool,
     pub fire_control_enabled: bool,
     pub outpost_mode: bool,
     pub transition_seq: u64,
@@ -238,8 +238,8 @@ pub struct RuntimeSwitches {
 pub trait QueueCleaner {
     fn clear_armor_input(&mut self);
     fn clear_armor_output(&mut self);
-    fn clear_buff_input(&mut self);
-    fn clear_buff_output(&mut self);
+    fn clear_energy_mechanism_input(&mut self);
+    fn clear_energy_mechanism_output(&mut self);
     fn clear_debug_output(&mut self);
 }
 ```
@@ -254,7 +254,7 @@ pub trait QueueCleaner {
 pub trait CameraProfileApplier {
     fn apply_auto_shot_profile(&mut self);
     fn apply_outpost_profile(&mut self);
-    fn apply_buff_profile(&mut self);
+    fn apply_energy_mechanism_profile(&mut self);
 }
 ```
 
@@ -348,7 +348,7 @@ sequenceDiagram
 
 - 根据 `RuntimeSwitches` 投递帧。
 - `armor_enabled == true` 时投递到 armor queue。
-- `buff_enabled == true` 时投递到 buff queue。
+- `energy_mechanism_enabled == true` 时投递到 energy mechanism queue。
 - 两者都 false 时丢帧。
 
 ### armor_pipeline
@@ -359,12 +359,12 @@ sequenceDiagram
 - 输出 solved armor / target state。
 - 输出结果带 `transition_seq`。
 
-### buff_pipeline
+### energy_mechanism_pipeline
 
 职责：
 
-- 处理 buff queue。
-- 输出 Buff 控制结果。
+- 处理 energy mechanism queue。
+- 输出能量机关控制结果。
 - 输出结果带 `transition_seq`。
 
 ### control_task
@@ -443,17 +443,17 @@ pub fn mark_feedback_stale(&mut self);
 
 - 首帧 `AutoShot` 进入 armor route。
 - 重复 `AutoShot` 不清队列。
-- `AutoShot -> HitBigBuff` 进入 Buff。
+- `AutoShot -> HitBigBuff` 进入 EnergyMechanism。
 - `HitBigBuff -> HitSmallBuff` 不重复 transition。
-- `Buff -> HitOutpost` 进入 Outpost。
+- `EnergyMechanism -> HitOutpost` 进入 Outpost。
 - reset 后状态清空。
 
 ### RuntimeRouter 单元测试
 
 需要新增：
 
-- `AutoShot -> Buff` 会清所有相关队列。
-- `Buff -> AutoShot` 会清队列并关闭 Buff。
+- `AutoShot -> EnergyMechanism` 会清所有相关队列。
+- `EnergyMechanism -> AutoShot` 会清队列并关闭能量机关。
 - `AutoShot -> Outpost` 会更新 `outpost_mode`。
 - 重复同 route 不清队列。
 - `transition_seq` 只在 route 变化时递增。
@@ -516,16 +516,16 @@ pub fn mark_feedback_stale(&mut self);
 要求：
 
 - 先跑通 `AutoShot`。
-- Buff route 可以先只清队列和丢帧，不要求算法完整。
+- EnergyMechanism route 可以先只清队列和丢帧，不要求算法完整。
 
-### Phase 4: Buff route 完整接入
+### Phase 4: EnergyMechanism route 完整接入
 
 改造：
 
-- 接入 Buff preprocess。
-- 接入 Buff pipeline。
-- 接入 Buff control。
-- 验证 `AutoShot <-> Buff <-> Outpost` 切换。
+- 接入 energy mechanism preprocess。
+- 接入 energy mechanism pipeline。
+- 接入 energy mechanism control。
+- 验证 `AutoShot <-> EnergyMechanism <-> Outpost` 切换。
 
 ## 取舍
 
