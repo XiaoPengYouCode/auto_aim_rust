@@ -1,5 +1,6 @@
 use log::warn;
 
+use crate::rbt_base::rbt_algorithm::rbt_antigravity::solve_ballistic_trajectory;
 use crate::rbt_infra::rbt_err::RbtResult;
 use crate::rbt_mod::rbt_comm::rbt_comm_frame::{
     AimingState, CtrlData, DEFAULT_BULLET_SPEED_MPS, SensData, ShotBuffMode, ShotMode,
@@ -34,6 +35,7 @@ pub struct FireControlStats {
     pub preview_mpc_active: bool,
     pub tolerance_deg: f64,
     pub yaw_error_deg: f64,
+    pub pitch_error_deg: f64,
     pub shot_mode: ShotMode,
     pub viable_slot_count: usize,
     pub first_slot_error_deg: f64,
@@ -58,6 +60,7 @@ impl Default for FireControlStats {
             preview_mpc_active: false,
             tolerance_deg: FireGateConfig::default().yaw_tolerance_deg(f64::NAN),
             yaw_error_deg: 0.0,
+            pitch_error_deg: 0.0,
             shot_mode: ShotMode::DoNothing,
             viable_slot_count: 0,
             first_slot_error_deg: f64::NAN,
@@ -78,8 +81,10 @@ impl Default for FireControlStats {
 #[derive(Debug, Clone, Copy)]
 struct TargetControlState {
     control_yaw_deg: f64,
+    control_pitch_deg: f64,
     tolerance_deg: f64,
     yaw_error_deg: f64,
+    pitch_error_deg: f64,
     viable_slot_count: usize,
     first_slot_error_deg: f64,
     gate_mcu: bool,
@@ -188,7 +193,7 @@ impl FireControlController {
 
         let control_data = CtrlData {
             gimbal_yaw: control_state.control_yaw_deg as f32,
-            gimbal_pitch: input.feedback.gimbal_pitch,
+            gimbal_pitch: control_state.control_pitch_deg as f32,
             shot_mode,
             shot_buff_mode: ShotBuffMode::ShotBuffOff,
             aiming_state: AimingState::AimingWithTarget,
@@ -201,6 +206,7 @@ impl FireControlController {
             preview_mpc_active: control_state.preview_mpc_active,
             tolerance_deg: control_state.tolerance_deg,
             yaw_error_deg: control_state.yaw_error_deg,
+            pitch_error_deg: control_state.pitch_error_deg,
             shot_mode,
             viable_slot_count: control_state.viable_slot_count,
             first_slot_error_deg: control_state.first_slot_error_deg,
@@ -256,6 +262,7 @@ impl FireControlController {
     ) -> TargetControlState {
         // 稳定目标直接用当前命中角。预瞄 MPC 在这里反而会把模型滞后带进指令。
         let control_yaw_deg = normalize_angle_deg(plan.target_yaw_rad.to_degrees());
+        let control_pitch_deg = armor_pitch_deg(plan.target_position_m, input.feedback);
         self.yaw_mpc
             .reset(control_yaw_deg, input.feedback.yaw_speed as f64);
 
@@ -263,7 +270,7 @@ impl FireControlController {
             .fire_gate
             .yaw_tolerance_deg(plan.target_position_m.x.hypot(plan.target_position_m.y));
         let yaw_error_deg = angle_diff_deg(control_yaw_deg, input.feedback.gimbal_yaw as f64);
-        let pitch_error_deg = 0.0;
+        let pitch_error_deg = angle_diff_deg(control_pitch_deg, input.feedback.gimbal_pitch as f64);
         let gate_mcu = input.feedback_fresh && input.feedback.mcu_fire_permit && target.fire_permit;
         let current_error_ok =
             self.fire_gate
@@ -283,8 +290,10 @@ impl FireControlController {
 
         TargetControlState {
             control_yaw_deg,
+            control_pitch_deg,
             tolerance_deg,
             yaw_error_deg,
+            pitch_error_deg,
             viable_slot_count,
             first_slot_error_deg: yaw_error_deg,
             gate_mcu,
@@ -340,6 +349,7 @@ impl FireControlController {
             .as_ref()
             .map(|output| output.command_deg)
             .unwrap_or_else(|| normalize_angle_deg(plan.target_yaw_rad.to_degrees()));
+        let control_pitch_deg = armor_pitch_deg(plan.target_position_m, input.feedback);
         if mpc_output.is_none() {
             self.yaw_mpc.reset(
                 input.feedback.gimbal_yaw as f64,
@@ -357,10 +367,14 @@ impl FireControlController {
 
         let Some(output) = mpc_output.as_ref() else {
             let yaw_error_deg = angle_diff_deg(control_yaw_deg, input.feedback.gimbal_yaw as f64);
+            let pitch_error_deg =
+                angle_diff_deg(control_pitch_deg, input.feedback.gimbal_pitch as f64);
             return TargetControlState {
                 control_yaw_deg,
+                control_pitch_deg,
                 tolerance_deg,
                 yaw_error_deg,
+                pitch_error_deg,
                 viable_slot_count: 0,
                 first_slot_error_deg: f64::NAN,
                 gate_mcu,
@@ -372,7 +386,7 @@ impl FireControlController {
                 gate_follow: false,
                 gate_command_stable: self.command_is_stable(
                     control_yaw_deg,
-                    input.feedback,
+                    control_pitch_deg,
                     tolerance_deg,
                 ),
                 planner_active: true,
@@ -388,6 +402,7 @@ impl FireControlController {
             input,
             output,
             control_yaw_deg,
+            control_pitch_deg,
             tolerance_deg,
             gate_mcu,
             require_impact_angle_gate,
@@ -403,6 +418,7 @@ impl FireControlController {
         input: FireControlInput,
         output: &SecondOrderPositionMpcOutput,
         control_yaw_deg: f64,
+        control_pitch_deg: f64,
         tolerance_deg: f64,
         gate_mcu: bool,
         require_impact_angle_gate: bool,
@@ -439,15 +455,18 @@ impl FireControlController {
         } else {
             true
         };
-        let gate_follow = self
-            .fire_gate
-            .follow_is_ready(yaw_error_deg, 0.0, tolerance_deg);
+        let pitch_error_deg = angle_diff_deg(control_pitch_deg, input.feedback.gimbal_pitch as f64);
+        let gate_follow =
+            self.fire_gate
+                .follow_is_ready(yaw_error_deg, pitch_error_deg, tolerance_deg);
         let hold_slot_count = self.shot_phase.config().auto_hold_slot_count.max(1);
 
         TargetControlState {
             control_yaw_deg,
+            control_pitch_deg,
             tolerance_deg,
             yaw_error_deg,
+            pitch_error_deg,
             viable_slot_count: gate_result.viable_slot_count,
             first_slot_error_deg,
             gate_mcu,
@@ -459,7 +478,7 @@ impl FireControlController {
             gate_follow,
             gate_command_stable: self.command_is_stable(
                 control_yaw_deg,
-                input.feedback,
+                control_pitch_deg,
                 tolerance_deg,
             ),
             planner_active: true,
@@ -471,15 +490,14 @@ impl FireControlController {
     fn command_is_stable(
         &self,
         control_yaw_deg: f64,
-        feedback: SensData,
+        control_pitch_deg: f64,
         tolerance_deg: f64,
     ) -> bool {
         let Some(last) = self.last_auto_command else {
             return false;
         };
         let yaw_delta_deg = angle_diff_deg(control_yaw_deg, last.gimbal_yaw as f64);
-        let pitch_delta_deg =
-            angle_diff_deg(feedback.gimbal_pitch as f64, last.gimbal_pitch as f64);
+        let pitch_delta_deg = angle_diff_deg(control_pitch_deg, last.gimbal_pitch as f64);
         self.fire_gate
             .command_is_stable(yaw_delta_deg, pitch_delta_deg, tolerance_deg)
     }
@@ -503,6 +521,23 @@ fn normalize_angle_deg(angle_deg: f64) -> f64 {
 
 fn angle_diff_deg(a: f64, b: f64) -> f64 {
     normalize_angle_deg(a - b).abs()
+}
+
+fn armor_pitch_deg(target_position_m: na::Point3<f64>, feedback: SensData) -> f64 {
+    let horizontal_distance_m = target_position_m.x.hypot(target_position_m.y);
+    solve_ballistic_trajectory(
+        feedback_bullet_speed(&feedback),
+        horizontal_distance_m,
+        target_position_m.z,
+    )
+    .map(|solution| solution.pitch_deg())
+    .unwrap_or_else(|err| {
+        warn!("fire_control: ballistic pitch fallback used: {err}");
+        target_position_m
+            .z
+            .atan2(horizontal_distance_m.max(1e-6))
+            .to_degrees()
+    })
 }
 
 #[cfg(test)]
@@ -548,6 +583,13 @@ mod tests {
             motion_translation_burst_metric: 0.0,
             motion_translation_drift_metric: 0.0,
             motion_yaw_accel_metric: 0.0,
+        }
+    }
+
+    fn raised_target(motion_state: TargetMotionState) -> EnemyTrackSnapshot {
+        EnemyTrackSnapshot {
+            armor_z_m: 0.5,
+            ..target(motion_state)
         }
     }
 
@@ -599,6 +641,21 @@ mod tests {
         assert!(stats.static_bypass_active);
         assert!(!stats.preview_mpc_active);
         assert!(control.gimbal_yaw.abs() < 1e-4);
+    }
+
+    #[test]
+    fn armor_target_outputs_ballistic_pitch_command() {
+        let mut controller = FireControlController::new().unwrap();
+
+        let control = controller.update(input(
+            Some(raised_target(TargetMotionState::Static)),
+            true,
+            true,
+        ));
+        let stats = controller.last_stats();
+
+        assert!(control.gimbal_pitch > feedback(true).gimbal_pitch);
+        assert!(stats.pitch_error_deg > 0.0);
     }
 
     #[test]

@@ -234,6 +234,10 @@ mod tests {
             lost: false,
             track_valid: true,
             state_age_s: 0.0,
+            switch_deferred: false,
+            target_switched: false,
+            selected_phase_index: Some(0),
+            selected_roll_offset_rad: Some(0.0),
         };
 
         let control = controller.update(EnergyMechanismControlInput {
