@@ -5,15 +5,24 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
-use std::thread;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant as StdInstant};
 use tokio::task::JoinHandle;
 use tokio::time::Instant;
 
 // use crate::rbt_cfg::{self, DetectorConfig, RbtCfg};
 // use lib::rbt_mod::rbt_armor::ArmorKeyPoints;
-use lib::rbt_mod::{rbt_estimator::rbt_enemy_dynamic_model::EnemyId, rbt_solver::RbtSolvedResults};
+use lib::rbt_mod::{
+    rbt_energy_mechanism::{
+        EnergyMechanismControlInput, EnergyMechanismController, EnergyMechanismFrame,
+        EnergyMechanismMode, EnergyMechanismSolvedFrame, EnergyMechanismTracker,
+        EnergyMechanismYoloDecodeStats, EnergyMechanismYoloPostprocessCfg,
+        decode_energy_mechanism_output_with_stats, preprocess_energy_mechanism_letterbox_f32,
+        solve_energy_mechanism,
+    },
+    rbt_estimator::rbt_enemy_dynamic_model::EnemyId,
+    rbt_solver::RbtSolvedResults,
+};
 use lib::{
     rbt_infra::rbt_cfg::{DetectorCfg, RbtCfg},
     rbt_infra::{
@@ -40,7 +49,6 @@ use lib::{
     },
 };
 
-const DEFAULT_VIDEO_FRAME_PERIOD_MS: u64 = 0;
 const DEFAULT_VIDEO_FILE: &str = "offline_capture_bundle_outpost_rot180.avi";
 const RAW_RGB_CHANNELS: usize = 3;
 const FIRE_CONTROL_SNAPSHOT_STALE_MS: f64 = 180.0;
@@ -60,15 +68,109 @@ pub struct PlannerTrackSnapshot {
     publish_tp: Instant,
 }
 
+#[derive(Debug, Clone)]
+pub struct EnergyMechanismTrackPacket {
+    seq: u64,
+    target: Option<lib::rbt_mod::rbt_energy_mechanism::EnergyMechanismTrackSnapshot>,
+    publish_tp: Instant,
+}
+
 #[derive(Clone)]
-pub struct RuntimePipelineQueues {
+pub struct ArmorPipelineQueues {
     pre_infer_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
     infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
     solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
     track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
 }
 
-impl RuntimePipelineQueues {
+#[derive(Clone)]
+pub struct EnergyMechanismPipelineQueues {
+    pre_infer_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+    infer_post_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+    solved_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismSolvedFrame>>,
+    track_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismTrackPacket>>,
+}
+
+#[derive(Clone)]
+pub struct RuntimePipelineQueues {
+    armor: ArmorPipelineQueues,
+    energy_mechanism: EnergyMechanismPipelineQueues,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RuntimePipelineCompletion {
+    source_done: Arc<AtomicBool>,
+    armor_infer_done: Arc<AtomicBool>,
+    armor_post_done: Arc<AtomicBool>,
+    armor_estimate_done: Arc<AtomicBool>,
+    energy_infer_done: Arc<AtomicBool>,
+    energy_post_done: Arc<AtomicBool>,
+    energy_estimate_done: Arc<AtomicBool>,
+}
+
+impl RuntimePipelineCompletion {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn source_done(&self) -> bool {
+        self.source_done.load(Ordering::SeqCst)
+    }
+
+    fn armor_infer_done(&self) -> bool {
+        self.armor_infer_done.load(Ordering::SeqCst)
+    }
+
+    fn armor_post_done(&self) -> bool {
+        self.armor_post_done.load(Ordering::SeqCst)
+    }
+
+    fn armor_estimate_done(&self) -> bool {
+        self.armor_estimate_done.load(Ordering::SeqCst)
+    }
+
+    fn energy_infer_done(&self) -> bool {
+        self.energy_infer_done.load(Ordering::SeqCst)
+    }
+
+    fn energy_post_done(&self) -> bool {
+        self.energy_post_done.load(Ordering::SeqCst)
+    }
+
+    fn energy_estimate_done(&self) -> bool {
+        self.energy_estimate_done.load(Ordering::SeqCst)
+    }
+
+    fn mark_source_done(&self) {
+        self.source_done.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_armor_infer_done(&self) {
+        self.armor_infer_done.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_armor_post_done(&self) {
+        self.armor_post_done.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_armor_estimate_done(&self) {
+        self.armor_estimate_done.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_energy_infer_done(&self) {
+        self.energy_infer_done.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_energy_post_done(&self) {
+        self.energy_post_done.store(true, Ordering::SeqCst);
+    }
+
+    fn mark_energy_estimate_done(&self) {
+        self.energy_estimate_done.store(true, Ordering::SeqCst);
+    }
+}
+
+impl ArmorPipelineQueues {
     pub fn new(
         pre_infer_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
         infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
@@ -83,11 +185,51 @@ impl RuntimePipelineQueues {
         }
     }
 
-    fn clear_for_route_transition(&self) {
+    fn clear(&self) {
         self.pre_infer_queue.clear();
         self.infer_post_queue.clear();
         self.solved_queue.clear();
         self.track_queue.clear();
+    }
+}
+
+impl EnergyMechanismPipelineQueues {
+    pub fn new(
+        pre_infer_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+        infer_post_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+        solved_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismSolvedFrame>>,
+        track_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismTrackPacket>>,
+    ) -> Self {
+        Self {
+            pre_infer_queue,
+            infer_post_queue,
+            solved_queue,
+            track_queue,
+        }
+    }
+
+    fn clear(&self) {
+        self.pre_infer_queue.clear();
+        self.infer_post_queue.clear();
+        self.solved_queue.clear();
+        self.track_queue.clear();
+    }
+}
+
+impl RuntimePipelineQueues {
+    pub fn new(
+        armor: ArmorPipelineQueues,
+        energy_mechanism: EnergyMechanismPipelineQueues,
+    ) -> Self {
+        Self {
+            armor,
+            energy_mechanism,
+        }
+    }
+
+    fn clear_for_route_transition(&self) {
+        self.armor.clear();
+        self.energy_mechanism.clear();
     }
 }
 
@@ -316,35 +458,17 @@ fn log_rerun_filter_snapshot(
 }
 
 pub fn video_input_path() -> PathBuf {
-    std::env::var_os("AUTO_AIM_VIDEO_PATH")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("..")
-                .join("..")
-                .join("videos")
-                .join(DEFAULT_VIDEO_FILE)
-        })
-}
-
-fn configured_video_frame_period() -> Duration {
-    let millis = std::env::var("AUTO_AIM_VIDEO_FRAME_PERIOD_MS")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(DEFAULT_VIDEO_FRAME_PERIOD_MS);
-    Duration::from_millis(millis)
-}
-
-fn configured_max_video_frames() -> Option<u64> {
-    std::env::var("AUTO_AIM_MAX_FRAMES")
-        .ok()
-        .and_then(|value| value.parse::<u64>().ok())
-        .filter(|value| *value > 0)
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("videos")
+        .join(DEFAULT_VIDEO_FILE)
 }
 
 fn default_feedback(bullet_speed_mps: f64) -> SensData {
+    let task_mode = TaskMode::AutoShot;
     SensData {
-        task_mode: TaskMode::AutoShot,
+        task_mode,
         self_fraction: SelfFraction::Blue,
         bullet_speed: if bullet_speed_mps.is_finite() && bullet_speed_mps > 0.0 {
             bullet_speed_mps as f32
@@ -356,20 +480,23 @@ fn default_feedback(bullet_speed_mps: f64) -> SensData {
         gimbal_pitch: 0.0,
         yaw_speed: 0.0,
         mcu_fire_permit: false,
-        raw_task_mode: TaskMode::AutoShot.into(),
-        mapped_task_mode: TaskMode::AutoShot,
+        raw_task_mode: task_mode.into(),
+        mapped_task_mode: task_mode,
     }
 }
 
 /// 视频预处理阶段：读取原始视频帧，再 resize + letterbox 到模型输入张量。
 pub fn pre_process(
     queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+    energy_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
     detector_cfg: DetectorCfg,
     runtime_router: RuntimeRouter,
+    completion: RuntimePipelineCompletion,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
+        let completion_guard = completion.clone();
         let result = tokio::task::spawn_blocking(move || {
-            run_video_preprocess_loop(queue, detector_cfg, runtime_router)
+            run_video_preprocess_loop(queue, energy_queue, detector_cfg, runtime_router)
         })
         .await;
 
@@ -393,29 +520,27 @@ pub fn pre_process(
                 IS_RUNNING.store(false, Ordering::SeqCst);
             }
         }
+        completion_guard.mark_source_done();
     })
 }
 
 fn run_video_preprocess_loop(
     queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+    energy_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
     _detector_cfg: DetectorCfg,
     runtime_router: RuntimeRouter,
 ) -> Result<PreprocessSummary, String> {
     let video_path = video_input_path();
-    let frame_period = configured_video_frame_period();
-    let max_frames = configured_max_video_frames();
     let mut reader = FfmpegVideoReader::open(&video_path)?;
     let mut frame_id = 0_u64;
     let mut summary = PreprocessSummary::default();
     let started = StdInstant::now();
 
     info!(
-        "pre_process: streaming {} as original {}x{} rgb frames, frame_period={:?}, max_frames={:?}",
+        "pre_process: streaming {} as original {}x{} rgb frames",
         video_path.display(),
         reader.width,
-        reader.height,
-        frame_period,
-        max_frames
+        reader.height
     );
 
     loop {
@@ -430,31 +555,36 @@ fn run_video_preprocess_loop(
         };
         summary.read_total += read_started.elapsed();
 
-        if !runtime_router.state().armor_pipeline_active() {
+        let route_state = runtime_router.state();
+        if route_state.armor_pipeline_active() {
+            frame_id = frame_id.wrapping_add(1);
+            let mut rbt_frame = RbtFrame::new();
+            let preprocess_started = StdInstant::now();
+            let transform = preprocess_letterbox_f16(rbt_frame.pre_data(), &frame_img);
+            summary.preprocess_total += preprocess_started.elapsed();
+            rbt_frame.set_letterbox_transform(transform);
+            rbt_frame.set_id(frame_id);
+            rbt_frame.set_state(RbtFrameStage::Pre);
+            queue.push_latest(rbt_frame);
+        } else if route_state.energy_mechanism_active() {
+            let Some(mode) = EnergyMechanismMode::from_task_mode(route_state.task_mode) else {
+                continue;
+            };
+            frame_id = frame_id.wrapping_add(1);
+            let mut energy_frame = EnergyMechanismFrame::new(mode);
+            let preprocess_started = StdInstant::now();
+            let transform =
+                preprocess_energy_mechanism_letterbox_f32(energy_frame.pre_data(), &frame_img);
+            summary.preprocess_total += preprocess_started.elapsed();
+            energy_frame.set_letterbox_transform(transform);
+            energy_frame.set_id(frame_id);
+            energy_queue.push_latest(energy_frame);
+        } else {
             continue;
         }
 
-        frame_id = frame_id.wrapping_add(1);
-        let mut rbt_frame = RbtFrame::new();
-        let preprocess_started = StdInstant::now();
-        let transform = preprocess_letterbox_f16(rbt_frame.pre_data(), &frame_img);
-        summary.preprocess_total += preprocess_started.elapsed();
-        rbt_frame.set_letterbox_transform(transform);
-        rbt_frame.set_id(frame_id);
-        rbt_frame.set_state(RbtFrameStage::Pre);
-        queue.push_latest(rbt_frame);
-
         if frame_id == 1 || frame_id.is_multiple_of(60) {
             info!("pre_process: pushed video frame {frame_id}");
-        }
-
-        if max_frames.is_some_and(|max_frames| frame_id >= max_frames) {
-            info!("pre_process: reached AUTO_AIM_MAX_FRAMES={frame_id}");
-            break;
-        }
-
-        if !frame_period.is_zero() {
-            thread::sleep(frame_period);
         }
     }
 
@@ -613,6 +743,7 @@ pub fn infer(
     mut session: ort::session::Session,                // ONNX Runtime 推理会话
     infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>, // 发送推理结果到后续处理阶段
     runtime_router: RuntimeRouter,
+    completion: RuntimePipelineCompletion,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut infer_count = 0_u64;
@@ -628,12 +759,13 @@ pub fn infer(
             None => {
                 warn!("infer: armor session has no output");
                 IS_RUNNING.store(false, Ordering::SeqCst);
+                completion.mark_armor_infer_done();
                 return;
             }
         };
 
         loop {
-            if !IS_RUNNING.load(Ordering::SeqCst) && pre_infer_queue.is_empty() {
+            if completion.source_done() && pre_infer_queue.is_empty() {
                 info!(
                     "infer: stopping after {infer_count} frames, avg infer {:?}",
                     avg_duration(infer_total, infer_count)
@@ -709,6 +841,7 @@ pub fn infer(
                 }
             }
         }
+        completion.mark_armor_infer_done();
     })
 }
 
@@ -719,6 +852,7 @@ pub fn post_process(
     cfg: RbtCfg,
     rec: rr::RecordingStream,
     runtime_router: RuntimeRouter,
+    completion: RuntimePipelineCompletion,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut post_count = 0_u64;
@@ -733,7 +867,7 @@ pub fn post_process(
         let mut max_solved_armors = 0_usize;
         let mut decode_stats = ArmorYoloDecodeStats::default();
         loop {
-            if !IS_RUNNING.load(Ordering::SeqCst) && frame.is_empty() {
+            if completion.armor_infer_done() && frame.is_empty() {
                 info!(
                     "post_process: stopping after {post_count} frames, avg post {:?}, decoded armors 0/1/>1={decoded_zero_count}/{decoded_one_count}/{decoded_multi_count}, max decoded {max_decoded_armors}, solved armors 0/1/>1={solved_zero_count}/{solved_one_count}/{solved_multi_count}, max solved {max_solved_armors}, decode stats {:?}",
                     avg_duration(post_total, post_count),
@@ -849,6 +983,256 @@ pub fn post_process(
                 continue;
             }
         }
+        completion.mark_armor_post_done();
+    })
+}
+
+pub fn energy_mechanism_infer(
+    pre_infer_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+    mut session: ort::session::Session,
+    infer_post_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+    runtime_router: RuntimeRouter,
+    completion: RuntimePipelineCompletion,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut infer_count = 0_u64;
+        let mut infer_total = Duration::ZERO;
+        let output_name = match session
+            .outputs()
+            .iter()
+            .find(|output| output.name() == "output")
+            .or_else(|| session.outputs().first())
+            .map(|output| output.name().to_string())
+        {
+            Some(output_name) => output_name,
+            None => {
+                warn!("energy_mechanism_infer: session has no output");
+                IS_RUNNING.store(false, Ordering::SeqCst);
+                completion.mark_energy_infer_done();
+                return;
+            }
+        };
+
+        loop {
+            if completion.source_done() && pre_infer_queue.is_empty() {
+                info!(
+                    "energy_mechanism_infer: stopping after {infer_count} frames, avg infer {:?}",
+                    avg_duration(infer_total, infer_count)
+                );
+                break;
+            }
+            let Some(mut frame) = pop_latest_until_running(
+                &pre_infer_queue,
+                Duration::from_millis(PIPELINE_POP_TIMEOUT_MS),
+            )
+            .await
+            else {
+                continue;
+            };
+            let route_state = runtime_router.state();
+            if !route_state.energy_mechanism_active() {
+                continue;
+            }
+            let id = frame.id();
+            let output_name = output_name.clone();
+            let output_result = tokio::task::spawn_blocking(move || {
+                let started = StdInstant::now();
+                let output_2d = {
+                    let outputs = session
+                        .run(inputs![TensorRef::from_array_view(frame.pre_data_ref())
+                            .map_err(|err| err.to_string())?])
+                        .map_err(|err| err.to_string())?;
+                    let output = outputs[output_name.as_str()]
+                        .try_extract_array::<f32>()
+                        .map_err(|err| err.to_string())?
+                        .as_standard_layout()
+                        .to_owned();
+                    let shape = output.shape().to_vec();
+                    match shape.as_slice() {
+                        [1, channels, anchors] => output
+                            .into_shape_with_order((*channels, *anchors))
+                            .map_err(|err| {
+                                format!(
+                                    "failed to reshape energy mechanism output [{channels},{anchors}]: {err}"
+                                )
+                            })?,
+                        [channels, anchors] => output
+                            .into_shape_with_order((*channels, *anchors))
+                            .map_err(|err| {
+                                format!(
+                                    "failed to reshape energy mechanism output [{channels},{anchors}]: {err}"
+                                )
+                            })?,
+                        other => {
+                            return Err(format!(
+                                "unsupported energy mechanism output shape: {other:?}"
+                            ));
+                        }
+                    }
+                };
+                frame.set_infer_output(output_2d);
+                Ok::<_, String>((session, frame, started.elapsed()))
+            })
+            .await;
+
+            match output_result {
+                Ok(Ok((session_return, output, infer_elapsed))) => {
+                    infer_count = infer_count.wrapping_add(1);
+                    infer_total += infer_elapsed;
+                    let latest_route_state = runtime_router.state();
+                    if latest_route_state.transition_seq == route_state.transition_seq
+                        && latest_route_state.energy_mechanism_active()
+                    {
+                        infer_post_queue.push_latest(output);
+                    }
+                    session = session_return;
+                }
+                Ok(Err(err)) => {
+                    warn!("energy_mechanism_infer: failed to process frame {id}: {err}");
+                    IS_RUNNING.store(false, Ordering::SeqCst);
+                    break;
+                }
+                Err(err) => {
+                    warn!("energy_mechanism_infer: worker join failed for frame {id}: {err}");
+                    IS_RUNNING.store(false, Ordering::SeqCst);
+                    break;
+                }
+            }
+        }
+        completion.mark_energy_infer_done();
+    })
+}
+
+pub fn energy_mechanism_post_process(
+    frame_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+    solved_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismSolvedFrame>>,
+    cfg: RbtCfg,
+    runtime_router: RuntimeRouter,
+    completion: RuntimePipelineCompletion,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut post_count = 0_u64;
+        let mut post_total = Duration::ZERO;
+        let mut decode_stats = EnergyMechanismYoloDecodeStats::default();
+        loop {
+            if completion.energy_infer_done() && frame_queue.is_empty() {
+                info!(
+                    "energy_mechanism_post_process: stopping after {post_count} frames, avg post {:?}, decode stats {:?}",
+                    avg_duration(post_total, post_count),
+                    decode_stats,
+                );
+                break;
+            }
+            let Some(frame) = pop_latest_until_running(
+                &frame_queue,
+                Duration::from_millis(PIPELINE_POP_TIMEOUT_MS),
+            )
+            .await
+            else {
+                continue;
+            };
+            let route_state = runtime_router.state();
+            if !route_state.energy_mechanism_active() {
+                continue;
+            }
+            let detector_cfg = cfg.detector_cfg.energy_mechanism.clone();
+            let self_fraction = cfg.game_cfg.self_fraction();
+            let cam_k = cfg.cam_cfg.cam_k();
+            let id = frame.id();
+            let result = tokio::task::spawn_blocking(move || {
+                let started = StdInstant::now();
+                let post_cfg = EnergyMechanismYoloPostprocessCfg::from_detector_cfg(
+                    &detector_cfg,
+                    self_fraction,
+                );
+                let (objects, stats) = decode_energy_mechanism_output_with_stats(
+                    &frame.infer_data_ref(),
+                    frame.letterbox_transform(),
+                    &post_cfg,
+                );
+                let solved = solve_energy_mechanism(frame.mode(), objects, &cam_k)?;
+                Ok::<_, lib::rbt_infra::rbt_err::RbtError>((solved, stats, started.elapsed()))
+            })
+            .await;
+
+            match result {
+                Ok(Ok((solved, stats, post_elapsed))) => {
+                    post_count = post_count.wrapping_add(1);
+                    post_total += post_elapsed;
+                    decode_stats.anchors += stats.anchors;
+                    decode_stats.confidence_pass += stats.confidence_pass;
+                    decode_stats.class_pass += stats.class_pass;
+                    decode_stats.target_pass += stats.target_pass;
+                    decode_stats.self_color_pass += stats.self_color_pass;
+                    decode_stats.geometry_pass += stats.geometry_pass;
+                    decode_stats.nms_kept += stats.nms_kept;
+                    let latest_route_state = runtime_router.state();
+                    if latest_route_state.transition_seq == route_state.transition_seq
+                        && latest_route_state.energy_mechanism_active()
+                    {
+                        solved_queue.push_latest(solved);
+                    }
+                }
+                Ok(Err(err)) => {
+                    warn!("energy_mechanism_post_process: failed to solve frame {id}: {err}")
+                }
+                Err(err) => {
+                    warn!("energy_mechanism_post_process: worker join failed for frame {id}: {err}")
+                }
+            }
+        }
+        completion.mark_energy_post_done();
+    })
+}
+
+pub fn energy_mechanism_estimate_process(
+    solved_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismSolvedFrame>>,
+    track_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismTrackPacket>>,
+    runtime_router: RuntimeRouter,
+    completion: RuntimePipelineCompletion,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_millis(2));
+        let mut tracker = EnergyMechanismTracker::new(EnergyMechanismMode::Small);
+        let mut snapshot_seq = 0_u64;
+        let mut last_transition_seq = runtime_router.state().transition_seq;
+        loop {
+            ticker.tick().await;
+            if completion.energy_post_done() && solved_queue.is_empty() {
+                info!("energy_mechanism_estimate_process: stopping");
+                break;
+            }
+
+            let route_state = runtime_router.state();
+            if route_state.transition_seq != last_transition_seq {
+                let mode = EnergyMechanismMode::from_task_mode(route_state.task_mode)
+                    .unwrap_or(EnergyMechanismMode::Small);
+                tracker.reset(mode);
+                last_transition_seq = route_state.transition_seq;
+            }
+            if !route_state.energy_mechanism_active() {
+                continue;
+            }
+
+            let Some(mode) = EnergyMechanismMode::from_task_mode(route_state.task_mode) else {
+                continue;
+            };
+            let solved = solved_queue
+                .try_pop_latest()
+                .unwrap_or(EnergyMechanismSolvedFrame {
+                    mode,
+                    target: None,
+                    candidates: Vec::new(),
+                });
+            snapshot_seq = snapshot_seq.wrapping_add(1);
+            let target = tracker.update(mode, solved.target.as_ref());
+            track_queue.push_latest(EnergyMechanismTrackPacket {
+                seq: snapshot_seq,
+                target,
+                publish_tp: Instant::now(),
+            });
+        }
+        completion.mark_energy_estimate_done();
     })
 }
 
@@ -858,6 +1242,7 @@ pub fn estimate_process(
     track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
     rec: rr::RecordingStream,
     runtime_router: RuntimeRouter,
+    completion: RuntimePipelineCompletion,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(2));
@@ -868,7 +1253,7 @@ pub fn estimate_process(
         let mut last_transition_seq = runtime_router.state().transition_seq;
         loop {
             ticker.tick().await;
-            if !IS_RUNNING.load(Ordering::SeqCst) && solved_queue.is_empty() {
+            if completion.armor_post_done() && solved_queue.is_empty() {
                 info!("estimate_process: Stopping processing as IS_RUNNING is false");
                 break;
             }
@@ -909,14 +1294,17 @@ pub fn estimate_process(
                 publish_tp: Instant::now(),
             });
         }
+        completion.mark_armor_estimate_done();
     })
 }
 
 pub fn control_loop_250hz(
     track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
+    energy_track_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismTrackPacket>>,
     feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
     runtime_router: RuntimeRouter,
     runtime_queues: RuntimePipelineQueues,
+    completion: RuntimePipelineCompletion,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
@@ -928,7 +1316,9 @@ pub fn control_loop_250hz(
                 return;
             }
         };
+        let mut energy_mechanism_control = EnergyMechanismController::new();
         let mut latest_snapshot: Option<PlannerTrackSnapshot> = None;
+        let mut latest_energy_snapshot: Option<EnergyMechanismTrackPacket> = None;
         let mut latest_feedback: Option<(SensData, Instant)> = None;
         let mut frame_seq = 0_u8;
         let mut tick_count = 0_u64;
@@ -938,13 +1328,20 @@ pub fn control_loop_250hz(
 
         loop {
             ticker.tick().await;
-            if !IS_RUNNING.load(Ordering::SeqCst) && track_queue.is_empty() {
+            let track_queues_empty = track_queue.is_empty() && energy_track_queue.is_empty();
+            if completion.armor_estimate_done()
+                && completion.energy_estimate_done()
+                && track_queues_empty
+            {
                 info!("control_loop_250hz: Stopping processing as IS_RUNNING is false");
                 break;
             }
 
             if let Some(snapshot) = track_queue.try_pop_latest() {
                 latest_snapshot = Some(snapshot);
+            }
+            if let Some(snapshot) = energy_track_queue.try_pop_latest() {
+                latest_energy_snapshot = Some(snapshot);
             }
             if let Some(feedback) = feedback_queue.try_pop_latest() {
                 latest_feedback = Some((feedback, Instant::now()));
@@ -956,17 +1353,71 @@ pub fn control_loop_250hz(
                 if update.transition_seq != last_route_seq {
                     runtime_queues.clear_for_route_transition();
                     fire_control.reset();
+                    energy_mechanism_control.reset();
                     latest_snapshot = None;
+                    latest_energy_snapshot = None;
                     latest_feedback = Some((feedback, Instant::now()));
                     last_route_seq = update.transition_seq;
                 }
             }
 
             let route_state = runtime_router.state();
+            let feedback_fresh = latest_feedback.as_ref().is_some_and(|(_, tp)| {
+                tp.elapsed() <= Duration::from_millis(FEEDBACK_STALE_TIMEOUT_MS)
+            });
+            let feedback = if feedback_fresh {
+                latest_feedback
+                    .as_ref()
+                    .map(|(feedback, _)| *feedback)
+                    .unwrap_or_else(|| default_feedback(cfg.general_cfg.bullet_speed))
+            } else {
+                default_feedback(cfg.general_cfg.bullet_speed)
+            };
+
+            if route_state.energy_mechanism_active() {
+                let snapshot_age_ms = latest_energy_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.publish_tp.elapsed().as_secs_f64() * 1_000.0)
+                    .unwrap_or(f64::INFINITY);
+                let control_data = energy_mechanism_control.update(EnergyMechanismControlInput {
+                    target: latest_energy_snapshot
+                        .as_ref()
+                        .and_then(|snapshot| snapshot.target),
+                    feedback,
+                    feedback_fresh,
+                    dt_s,
+                    snapshot_age_ms,
+                });
+                let stats = energy_mechanism_control.last_stats();
+                let mut payload = [0_u8; CAN_FRAME_SIZE];
+                if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
+                    warn!("control_loop_250hz: failed to serialize energy mechanism frame: {err}");
+                }
+                tick_count = tick_count.wrapping_add(1);
+                frame_seq = frame_seq.wrapping_add(1);
+                if tick_count == 1 || tick_count.is_multiple_of(CONTROL_STATUS_LOG_PERIOD_TICKS) {
+                    let snapshot_seq = latest_energy_snapshot
+                        .as_ref()
+                        .map(|snapshot| snapshot.seq)
+                        .unwrap_or(0);
+                    info!(
+                        "control_loop_250hz: route=energy_mechanism seq={} target={} valid={} fb={} yaw={:.2}->{:.2} pitch={:.2}->{:.2} shot={:?} can={:02X?}",
+                        snapshot_seq,
+                        stats.target_detected,
+                        stats.track_valid,
+                        feedback_fresh,
+                        feedback.gimbal_yaw,
+                        control_data.gimbal_yaw,
+                        feedback.gimbal_pitch,
+                        control_data.gimbal_pitch,
+                        control_data.shot_mode,
+                        payload,
+                    );
+                }
+                continue;
+            }
+
             if !route_state.fire_control_active() {
-                let feedback = latest_feedback
-                    .map(|(feedback, _)| feedback)
-                    .unwrap_or_else(|| default_feedback(cfg.general_cfg.bullet_speed));
                 let control_data = route_disabled_control(feedback);
                 let mut payload = [0_u8; CAN_FRAME_SIZE];
                 if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
@@ -982,18 +1433,6 @@ pub fn control_loop_250hz(
                 }
                 continue;
             }
-
-            let feedback_fresh = latest_feedback.as_ref().is_some_and(|(_, tp)| {
-                tp.elapsed() <= Duration::from_millis(FEEDBACK_STALE_TIMEOUT_MS)
-            });
-            let feedback = if feedback_fresh {
-                latest_feedback
-                    .as_ref()
-                    .map(|(feedback, _)| *feedback)
-                    .unwrap_or_else(|| default_feedback(cfg.general_cfg.bullet_speed))
-            } else {
-                default_feedback(cfg.general_cfg.bullet_speed)
-            };
 
             let snapshot_age_ms = latest_snapshot
                 .as_ref()
@@ -1084,11 +1523,11 @@ async fn pop_latest_until_running<T>(queue: &RbtSPSCQueueAsync<T>, timeout: Dura
         if let Some(item) = queue.try_pop_latest() {
             return Some(item);
         }
-        if !IS_RUNNING.load(Ordering::SeqCst) {
-            return None;
-        }
         if let Ok(item) = tokio::time::timeout(timeout, queue.pop_latest()).await {
             return item;
+        }
+        if !IS_RUNNING.load(Ordering::SeqCst) {
+            return None;
         }
     }
 }

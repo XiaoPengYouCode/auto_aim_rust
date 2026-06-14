@@ -79,6 +79,32 @@ pub struct EnergyMechanismDetectorCfg {
     pub engine_path: String,
     pub confidence_threshold: f32,
     pub nms_iou_threshold: f32,
+    #[serde(default = "default_energy_target_switch_missing_timeout_s")]
+    pub target_switch_missing_timeout_s: f64,
+    #[serde(default = "default_energy_lost_timeout_s")]
+    pub lost_timeout_s: f64,
+    #[serde(default = "default_energy_fire_gap_s")]
+    pub fire_gap_s: f64,
+    #[serde(default)]
+    pub yaw_offset_deg: f64,
+    #[serde(default)]
+    pub pitch_offset_deg: f64,
+    #[serde(default)]
+    pub predict_time_s: f64,
+    #[serde(default)]
+    pub pitch_velocity_lead_time_s: f64,
+}
+
+fn default_energy_target_switch_missing_timeout_s() -> f64 {
+    0.2
+}
+
+fn default_energy_lost_timeout_s() -> f64 {
+    0.35
+}
+
+fn default_energy_fire_gap_s() -> f64 {
+    0.2
 }
 
 /// 相机相关配置
