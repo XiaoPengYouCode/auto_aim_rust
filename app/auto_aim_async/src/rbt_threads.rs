@@ -22,8 +22,9 @@ use lib::{
     },
     rbt_mod::{
         rbt_comm::rbt_comm_frame::{
-            CAN_FRAME_SIZE, CONTROL_LOOP_PERIOD_MS, DEFAULT_BULLET_SPEED_MPS,
-            FEEDBACK_STALE_TIMEOUT_MS, SelfFraction, SensData, TaskMode,
+            AimingState, CAN_FRAME_SIZE, CONTROL_LOOP_PERIOD_MS, CtrlData,
+            DEFAULT_BULLET_SPEED_MPS, FEEDBACK_STALE_TIMEOUT_MS, SelfFraction, SensData,
+            ShotBuffMode, ShotMode, TaskMode,
         },
         rbt_detector::{
             rbt_frame::{ARMOR_OUTPUT_COLS, ARMOR_OUTPUT_ROWS, RbtFrame, RbtFrameStage},
@@ -34,6 +35,7 @@ use lib::{
         },
         rbt_estimator::{EnemyTrackSnapshot, RbtHandlerPoll},
         rbt_fire_control::{FireControlController, FireControlInput},
+        rbt_runtime_router::RuntimeRouter,
         rbt_solver::enemys_solver,
     },
 };
@@ -56,6 +58,37 @@ pub struct PlannerTrackSnapshot {
     seq: u64,
     target: Option<EnemyTrackSnapshot>,
     publish_tp: Instant,
+}
+
+#[derive(Clone)]
+pub struct RuntimePipelineQueues {
+    pre_infer_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+    infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+    solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
+    track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
+}
+
+impl RuntimePipelineQueues {
+    pub fn new(
+        pre_infer_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+        infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
+        solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
+        track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
+    ) -> Self {
+        Self {
+            pre_infer_queue,
+            infer_post_queue,
+            solved_queue,
+            track_queue,
+        }
+    }
+
+    fn clear_for_route_transition(&self) {
+        self.pre_infer_queue.clear();
+        self.infer_post_queue.clear();
+        self.solved_queue.clear();
+        self.track_queue.clear();
+    }
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -332,11 +365,13 @@ fn default_feedback(bullet_speed_mps: f64) -> SensData {
 pub fn pre_process(
     queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
     detector_cfg: DetectorCfg,
+    runtime_router: RuntimeRouter,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
-        let result =
-            tokio::task::spawn_blocking(move || run_video_preprocess_loop(queue, detector_cfg))
-                .await;
+        let result = tokio::task::spawn_blocking(move || {
+            run_video_preprocess_loop(queue, detector_cfg, runtime_router)
+        })
+        .await;
 
         match result {
             Ok(Ok(summary)) => {
@@ -364,6 +399,7 @@ pub fn pre_process(
 fn run_video_preprocess_loop(
     queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
     _detector_cfg: DetectorCfg,
+    runtime_router: RuntimeRouter,
 ) -> Result<PreprocessSummary, String> {
     let video_path = video_input_path();
     let frame_period = configured_video_frame_period();
@@ -393,6 +429,10 @@ fn run_video_preprocess_loop(
             break;
         };
         summary.read_total += read_started.elapsed();
+
+        if !runtime_router.state().armor_pipeline_active() {
+            continue;
+        }
 
         frame_id = frame_id.wrapping_add(1);
         let mut rbt_frame = RbtFrame::new();
@@ -572,6 +612,7 @@ pub fn infer(
     pre_infer_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>, // 接收预处理阶段的输出
     mut session: ort::session::Session,                // ONNX Runtime 推理会话
     infer_post_queue: Arc<RbtSPSCQueueAsync<RbtFrame>>, // 发送推理结果到后续处理阶段
+    runtime_router: RuntimeRouter,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut infer_count = 0_u64;
@@ -605,6 +646,10 @@ pub fn infer(
             )
             .await
             {
+                let route_state = runtime_router.state();
+                if !route_state.armor_pipeline_active() {
+                    continue;
+                }
                 debug!(
                     "infer: Frame ID {} received form processing, time used: {:?}",
                     frame.id(),
@@ -643,7 +688,12 @@ pub fn infer(
                     Ok(Ok((session_return, output, infer_elapsed))) => {
                         infer_count = infer_count.wrapping_add(1);
                         infer_total += infer_elapsed;
-                        infer_post_queue.push_latest(output); // 将最新推理结果发送到后处理阶段
+                        let latest_route_state = runtime_router.state();
+                        if latest_route_state.transition_seq == route_state.transition_seq
+                            && latest_route_state.armor_pipeline_active()
+                        {
+                            infer_post_queue.push_latest(output); // 将最新推理结果发送到后处理阶段
+                        }
                         session = session_return; // 确保会话在闭包外部可用
                     }
                     Ok(Err(err)) => {
@@ -668,6 +718,7 @@ pub fn post_process(
     solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
     cfg: RbtCfg,
     rec: rr::RecordingStream,
+    runtime_router: RuntimeRouter,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut post_count = 0_u64;
@@ -698,6 +749,10 @@ pub fn post_process(
                 pop_latest_until_running(&frame, Duration::from_millis(PIPELINE_POP_TIMEOUT_MS))
                     .await
             {
+                let route_state = runtime_router.state();
+                if !route_state.armor_pipeline_active() {
+                    continue;
+                }
                 let time_used = frame.time_used(); // 获取处理时间
                 debug!(
                     "post_process: Frame ID {} received in {:?}",
@@ -774,7 +829,12 @@ pub fn post_process(
                             "post_process: frame {id} decoded {decoded_armor_count} armors across {decoded_enemy_count} ids, solved {solved_armor_count} armors"
                         );
                     }
-                    solved_queue.push_latest(solved_enemies);
+                    let latest_route_state = runtime_router.state();
+                    if latest_route_state.transition_seq == route_state.transition_seq
+                        && latest_route_state.armor_pipeline_active()
+                    {
+                        solved_queue.push_latest(solved_enemies);
+                    }
                     let time_used = _frame.time_used(); // 获取处理时间
                     debug!(
                         "post_process: Frame ID {} processed successfully, time used: {:?}",
@@ -797,6 +857,7 @@ pub fn estimate_process(
     solved_queue: Arc<RbtSPSCQueueAsync<RbtSolvedResults>>,
     track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
     rec: rr::RecordingStream,
+    runtime_router: RuntimeRouter,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(2));
@@ -804,11 +865,21 @@ pub fn estimate_process(
         let mut snapshot_seq = 0_u64;
         let mut raw_visible = false;
         let mut filtered_visible = false;
+        let mut last_transition_seq = runtime_router.state().transition_seq;
         loop {
             ticker.tick().await;
             if !IS_RUNNING.load(Ordering::SeqCst) && solved_queue.is_empty() {
                 info!("estimate_process: Stopping processing as IS_RUNNING is false");
                 break;
+            }
+
+            let route_state = runtime_router.state();
+            if route_state.transition_seq != last_transition_seq {
+                estimator_poll = RbtHandlerPoll::new();
+                last_transition_seq = route_state.transition_seq;
+            }
+            if !route_state.armor_pipeline_active() {
+                continue;
             }
 
             let enemys = solved_queue.try_pop_latest().unwrap_or_default();
@@ -844,6 +915,8 @@ pub fn estimate_process(
 pub fn control_loop_250hz(
     track_queue: Arc<RbtSPSCQueueAsync<PlannerTrackSnapshot>>,
     feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
+    runtime_router: RuntimeRouter,
+    runtime_queues: RuntimePipelineQueues,
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
@@ -861,6 +934,7 @@ pub fn control_loop_250hz(
         let mut tick_count = 0_u64;
         let dt_s = CONTROL_LOOP_PERIOD_MS * 1e-3;
         let mut ticker = tokio::time::interval(Duration::from_secs_f64(dt_s));
+        let mut last_route_seq = runtime_router.state().transition_seq;
 
         loop {
             ticker.tick().await;
@@ -874,6 +948,39 @@ pub fn control_loop_250hz(
             }
             if let Some(feedback) = feedback_queue.try_pop_latest() {
                 latest_feedback = Some((feedback, Instant::now()));
+            }
+
+            let feedback_for_route = latest_feedback.map(|(feedback, _)| feedback);
+            if let Some(feedback) = feedback_for_route {
+                let update = runtime_router.apply_feedback(&feedback);
+                if update.transition_seq != last_route_seq {
+                    runtime_queues.clear_for_route_transition();
+                    fire_control.reset();
+                    latest_snapshot = None;
+                    latest_feedback = Some((feedback, Instant::now()));
+                    last_route_seq = update.transition_seq;
+                }
+            }
+
+            let route_state = runtime_router.state();
+            if !route_state.fire_control_active() {
+                let feedback = latest_feedback
+                    .map(|(feedback, _)| feedback)
+                    .unwrap_or_else(|| default_feedback(cfg.general_cfg.bullet_speed));
+                let control_data = route_disabled_control(feedback);
+                let mut payload = [0_u8; CAN_FRAME_SIZE];
+                if let Err(err) = control_data.serialize_with_seq(frame_seq, &mut payload) {
+                    warn!("control_loop_250hz: failed to serialize disabled-route frame: {err}");
+                }
+                tick_count = tick_count.wrapping_add(1);
+                frame_seq = frame_seq.wrapping_add(1);
+                if tick_count == 1 || tick_count.is_multiple_of(CONTROL_STATUS_LOG_PERIOD_TICKS) {
+                    info!(
+                        "control_loop_250hz: route={:?} fire_control=off shot={:?} can={:02X?}",
+                        route_state.route, control_data.shot_mode, payload
+                    );
+                }
+                continue;
             }
 
             let feedback_fresh = latest_feedback.as_ref().is_some_and(|(_, tp)| {
@@ -962,6 +1069,16 @@ fn format_status_value(value: f64) -> String {
     }
 }
 
+fn route_disabled_control(feedback: SensData) -> CtrlData {
+    CtrlData {
+        gimbal_yaw: feedback.gimbal_yaw,
+        gimbal_pitch: feedback.gimbal_pitch,
+        shot_mode: ShotMode::DoNothing,
+        shot_buff_mode: ShotBuffMode::ShotBuffOff,
+        aiming_state: AimingState::AimingNoTarget,
+    }
+}
+
 async fn pop_latest_until_running<T>(queue: &RbtSPSCQueueAsync<T>, timeout: Duration) -> Option<T> {
     loop {
         if let Some(item) = queue.try_pop_latest() {
@@ -988,6 +1105,21 @@ mod tests {
         assert_eq!(feedback.gimbal_pitch, 0.0);
         assert!(!feedback.mcu_fire_permit);
         assert_eq!(feedback.task_mode, TaskMode::AutoShot);
+    }
+
+    #[test]
+    fn route_disabled_control_keeps_gimbal_and_stops_fire() {
+        let mut feedback = default_feedback(24.0);
+        feedback.gimbal_yaw = 12.5;
+        feedback.gimbal_pitch = -3.0;
+
+        let control = route_disabled_control(feedback);
+
+        assert_eq!(control.gimbal_yaw, 12.5);
+        assert_eq!(control.gimbal_pitch, -3.0);
+        assert_eq!(control.shot_mode, ShotMode::DoNothing);
+        assert_eq!(control.shot_buff_mode, ShotBuffMode::ShotBuffOff);
+        assert_eq!(control.aiming_state, AimingState::AimingNoTarget);
     }
 
     #[test]
