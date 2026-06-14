@@ -2,12 +2,15 @@ use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 
 use super::detected::{EnergyMechanismMode, EnergyMechanismObject};
 
+const R_CENTER_KEYPOINT_INDEX: usize = 4;
 const MODEL_TOP_M: na::Point3<f64> = na::Point3::new(0.0, 0.0, 0.827);
 const MODEL_LEFT_M: na::Point3<f64> = na::Point3::new(0.0, -0.127, 0.700);
 const MODEL_BOTTOM_M: na::Point3<f64> = na::Point3::new(0.0, 0.0, 0.573);
 const MODEL_RIGHT_M: na::Point3<f64> = na::Point3::new(0.0, 0.127, 0.700);
 const MODEL_BLADE_CENTER_M: na::Point3<f64> = na::Point3::new(0.0, 0.0, 0.700);
 const MODEL_R_CENTER_M: na::Point3<f64> = na::Point3::new(0.0, 0.0, 0.0);
+const MODEL_BLADE_RADIUS_M: f32 = 0.700;
+const R_CENTER_GEOMETRY_MAX_ERROR_RATIO: f32 = 0.35;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct EnergyMechanismPose {
@@ -25,9 +28,13 @@ pub struct EnergyMechanismSolvedTarget {
     pub pose: EnergyMechanismPose,
     pub image_r_center: na::Point2<f32>,
     pub image_target_center: na::Point2<f32>,
+    pub image_r_center_corrected: bool,
     pub confidence: f32,
     pub selected_phase_index: usize,
     pub observed_roll_rad: f64,
+    pub switch_deferred: bool,
+    pub target_switched: bool,
+    pub selected_roll_offset_rad: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -43,18 +50,30 @@ pub fn solve_energy_mechanism(
     cam_k: &na::Matrix3<f64>,
 ) -> RbtResult<EnergyMechanismSolvedFrame> {
     let mut best = None;
-    for (index, candidate) in candidates.iter().enumerate() {
-        let Some(pose) = solve_candidate_pose(candidate, cam_k) else {
+    let mut corrected_candidates = Vec::with_capacity(candidates.len());
+    for candidate in &candidates {
+        let corrected = correct_candidate_r_center(candidate);
+        let Some(pose) = solve_candidate_pose(&corrected.object, cam_k) else {
+            corrected_candidates.push(corrected.object);
             continue;
         };
+        let observed_roll_rad = observed_roll(&corrected.object);
+        let selected_phase_index = phase_index_from_roll(observed_roll_rad);
         let target = EnergyMechanismSolvedTarget {
             mode,
-            observed_roll_rad: observed_roll(candidate),
+            observed_roll_rad,
             pose,
-            image_r_center: candidate.r_center(),
-            image_target_center: candidate.target_center(),
+            image_r_center: corrected.object.r_center(),
+            image_target_center: corrected.object.target_center(),
+            image_r_center_corrected: corrected.corrected,
             confidence: candidate.confidence,
-            selected_phase_index: index,
+            selected_phase_index,
+            switch_deferred: false,
+            target_switched: false,
+            selected_roll_offset_rad: Some(phase_offset_rad(
+                observed_roll_rad,
+                selected_phase_index,
+            )),
         };
         if best
             .as_ref()
@@ -65,13 +84,65 @@ pub fn solve_energy_mechanism(
         {
             best = Some(target);
         }
+        corrected_candidates.push(corrected.object);
     }
 
     Ok(EnergyMechanismSolvedFrame {
         mode,
         target: best,
-        candidates,
+        candidates: corrected_candidates,
     })
+}
+
+#[derive(Debug, Clone)]
+struct CorrectedCandidate {
+    object: EnergyMechanismObject,
+    corrected: bool,
+}
+
+fn correct_candidate_r_center(candidate: &EnergyMechanismObject) -> CorrectedCandidate {
+    let target = candidate.target_center();
+    let observed_r = candidate.r_center();
+    let geometry_r = geometry_r_center(candidate);
+    let observed_radius = (observed_r - target).norm();
+    let geometry_radius = geometry_radius(candidate);
+    let corrected = observed_radius <= 1e-3
+        || (observed_radius - geometry_radius).abs()
+            > geometry_radius * R_CENTER_GEOMETRY_MAX_ERROR_RATIO;
+    if corrected {
+        let mut object = candidate.clone();
+        object.keypoints[R_CENTER_KEYPOINT_INDEX] = geometry_r;
+        CorrectedCandidate { object, corrected }
+    } else {
+        CorrectedCandidate {
+            object: candidate.clone(),
+            corrected,
+        }
+    }
+}
+
+fn geometry_r_center(candidate: &EnergyMechanismObject) -> na::Point2<f32> {
+    let target = candidate.target_center();
+    let observed_r = candidate.r_center();
+    let radius = geometry_radius(candidate);
+    let direction = observed_r - target;
+    let direction = if direction.norm() > 1e-3 {
+        direction.normalize()
+    } else {
+        na::Vector2::new(0.0, -1.0)
+    };
+    target + direction * radius
+}
+
+fn geometry_radius(candidate: &EnergyMechanismObject) -> f32 {
+    let top = candidate.keypoints[0];
+    let left = candidate.keypoints[1];
+    let bottom = candidate.keypoints[2];
+    let right = candidate.keypoints[3];
+    let vertical = (top - bottom).norm();
+    let horizontal = (left - right).norm();
+    let blade_span_px = ((vertical + horizontal) * 0.5).max(1.0);
+    blade_span_px * MODEL_BLADE_RADIUS_M / 0.254
 }
 
 fn solve_candidate_pose(
@@ -225,6 +296,25 @@ fn observed_roll(candidate: &EnergyMechanismObject) -> f64 {
     (target.y - r_center.y).atan2(target.x - r_center.x) as f64
 }
 
+fn phase_index_from_roll(roll_rad: f64) -> usize {
+    let normalized = roll_rad.rem_euclid(std::f64::consts::TAU);
+    ((normalized / (std::f64::consts::TAU / 5.0)).round() as usize) % 5
+}
+
+fn phase_offset_rad(roll_rad: f64, phase_index: usize) -> f64 {
+    normalize_angle(roll_rad - phase_index as f64 * std::f64::consts::TAU / 5.0)
+}
+
+fn normalize_angle(mut angle: f64) -> f64 {
+    while angle > std::f64::consts::PI {
+        angle -= std::f64::consts::TAU;
+    }
+    while angle < -std::f64::consts::PI {
+        angle += std::f64::consts::TAU;
+    }
+    angle
+}
+
 fn to_f64(point: na::Point2<f32>) -> na::Point2<f64> {
     na::Point2::new(point.x as f64, point.y as f64)
 }
@@ -251,6 +341,21 @@ mod tests {
             (projected.x / projected.z) as f32,
             (projected.y / projected.z) as f32,
         )
+    }
+
+    fn image_object_with_r_center(r_center: na::Point2<f32>) -> EnergyMechanismObject {
+        EnergyMechanismObject {
+            bbox: EnergyMechanismBBox::from_center_size(320.0, 320.0, 140.0, 140.0),
+            class: EnergyMechanismClass::RedTarget,
+            confidence: 0.9,
+            keypoints: [
+                na::Point2::new(320.0, 260.0),
+                na::Point2::new(290.0, 320.0),
+                na::Point2::new(320.0, 380.0),
+                na::Point2::new(350.0, 320.0),
+                r_center,
+            ],
+        }
     }
 
     #[test]
@@ -302,5 +407,25 @@ mod tests {
             solve_energy_mechanism(EnergyMechanismMode::Large, vec![object], &cam_k).unwrap();
 
         assert!(solved.target.is_none());
+    }
+
+    #[test]
+    fn corrects_bad_r_center_to_geometry_radius() {
+        let object = image_object_with_r_center(na::Point2::new(320.0, 319.0));
+        let corrected = correct_candidate_r_center(&object);
+        let target = object.target_center();
+        let expected_radius = geometry_radius(&object);
+
+        assert!(corrected.corrected);
+        assert!(((corrected.object.r_center() - target).norm() - expected_radius).abs() < 1e-3);
+    }
+
+    #[test]
+    fn keeps_consistent_r_center_without_correction() {
+        let object = image_object_with_r_center(na::Point2::new(320.0, 650.0));
+        let corrected = correct_candidate_r_center(&object);
+
+        assert!(!corrected.corrected);
+        assert_eq!(corrected.object.r_center(), object.r_center());
     }
 }
