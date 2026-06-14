@@ -50,6 +50,18 @@ pub struct LoggerCfg {
 pub struct GeneralCfg {
     pub img_dbg: bool,
     pub bullet_speed: f64,
+    #[serde(default = "default_can_interface")]
+    pub can_interface: String,
+    #[serde(default = "default_can_enabled")]
+    pub can_enabled: bool,
+}
+
+fn default_can_interface() -> String {
+    "can0".to_string()
+}
+
+fn default_can_enabled() -> bool {
+    true
 }
 
 // 检测器相关配置

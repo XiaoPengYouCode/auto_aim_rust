@@ -3,9 +3,10 @@ extern crate rerun as rr;
 
 use crate::rbt_threads::{
     ArmorPipelineQueues, EnergyMechanismPipelineQueues, EnergyMechanismTrackPacket,
-    PlannerTrackSnapshot, RuntimePipelineCompletion, RuntimePipelineQueues, control_loop_250hz,
-    energy_mechanism_estimate_process, energy_mechanism_infer, energy_mechanism_post_process,
-    estimate_process, infer, post_process, pre_process, video_input_path,
+    PlannerTrackSnapshot, RuntimePipelineCompletion, RuntimePipelineQueues, can_io_process,
+    control_loop_250hz, energy_mechanism_estimate_process, energy_mechanism_infer,
+    energy_mechanism_post_process, estimate_process, infer, post_process, pre_process,
+    video_input_path,
 };
 use auto_aim_rust::rbt_infra::rbt_log;
 use lib as auto_aim_rust;
@@ -13,7 +14,7 @@ use lib::rbt_infra::rbt_err::{RbtError, RbtResult};
 use lib::rbt_infra::rbt_global::GENERIC_RBT_CFG;
 use lib::rbt_infra::rbt_ort_ep::configure_session_builder;
 use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
-use lib::rbt_mod::rbt_comm::rbt_comm_frame::SensData;
+use lib::rbt_mod::rbt_comm::rbt_comm_frame::{CtrlData, SensData};
 use lib::rbt_mod::rbt_detector::rbt_frame::RbtFrame;
 use lib::rbt_mod::rbt_energy_mechanism::{EnergyMechanismFrame, EnergyMechanismSolvedFrame};
 use lib::rbt_mod::rbt_runtime_router::RuntimeRouter;
@@ -64,6 +65,7 @@ async fn main() -> RbtResult<()> {
     let energy_solved_queue = Arc::new(RbtSPSCQueueAsync::<EnergyMechanismSolvedFrame>::new(1));
     let energy_track_queue = Arc::new(RbtSPSCQueueAsync::<EnergyMechanismTrackPacket>::new(1));
     let feedback_queue = Arc::new(RbtSPSCQueueAsync::<SensData>::new(1));
+    let control_tx_queue = Arc::new(RbtSPSCQueueAsync::<CtrlData>::new(1));
     let armor_queues = ArmorPipelineQueues::new(
         pre_infer_queue.clone(),
         infer_post_queue.clone(),
@@ -170,14 +172,17 @@ async fn main() -> RbtResult<()> {
     let control_task_handler = control_loop_250hz(
         track_queue.clone(),
         energy_track_queue.clone(),
-        feedback_queue,
+        feedback_queue.clone(),
+        control_tx_queue.clone(),
         runtime_router,
         runtime_queues,
-        runtime_completion,
+        runtime_completion.clone(),
     );
+    let can_task_handler =
+        can_io_process(control_tx_queue, feedback_queue, cfg, runtime_completion);
 
     let tim = std::time::Instant::now();
-    let (_, _, _, _, _, _, _, _) = tokio::join!(
+    let (_, _, _, _, _, _, _, _, _) = tokio::join!(
         pre_task_handler,
         infer_task_handler,
         post_task_handler,
@@ -185,7 +190,8 @@ async fn main() -> RbtResult<()> {
         energy_post_task_handler,
         energy_estimate_task_handler,
         estimate_task_handler,
-        control_task_handler
+        control_task_handler,
+        can_task_handler
     );
     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await; // wait for post process to finish
     info!("multi_thread_pipeline finished in {:?}", tim.elapsed());
