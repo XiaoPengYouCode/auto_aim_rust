@@ -356,7 +356,9 @@ impl RbtEstimator {
                 } else {
                     radius_from_center
                 };
-                let yaw_rad = if radius_from_center > 1e-6 {
+                let yaw_rad = if armor_num == 3 {
+                    armor.observed_yaw_rad()
+                } else if radius_from_center > 1e-6 {
                     (dy / sign).atan2(dx / sign)
                 } else {
                     armor.observed_yaw_rad()
