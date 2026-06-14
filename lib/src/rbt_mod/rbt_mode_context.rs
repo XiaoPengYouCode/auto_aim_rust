@@ -62,7 +62,6 @@ impl ModeTransition {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ModeRuntimeSwitch {
     pub clear_mode_queues: bool,
-    pub reset_buff_state: bool,
     pub yolo_preprocess_active: bool,
     pub yolo_active: bool,
     pub fire_control_active: bool,
@@ -74,7 +73,6 @@ impl ModeRuntimeSwitch {
     fn new(route: ModeRoute, transition: ModeTransition) -> Self {
         Self {
             clear_mode_queues: transition.changed(),
-            reset_buff_state: matches!(transition, ModeTransition::EnterBuff),
             yolo_preprocess_active: route.yolo_preprocess_active(),
             yolo_active: route.yolo_active(),
             fire_control_active: route.fire_control_active(),
@@ -125,6 +123,17 @@ impl ModeContext {
             active_route: None,
             latest_raw_task_mode: 0,
             latest_mapped_task_mode: None,
+            transition_seq: 0,
+            last_transition_at: None,
+        }
+    }
+
+    pub fn with_initial_task_mode(task_mode: TaskMode) -> Self {
+        Self {
+            current_task_mode: Some(task_mode),
+            active_route: Some(ModeRoute::from_task_mode(task_mode)),
+            latest_raw_task_mode: task_mode.into(),
+            latest_mapped_task_mode: Some(task_mode),
             transition_seq: 0,
             last_transition_at: None,
         }
@@ -265,7 +274,6 @@ mod tests {
         assert_eq!(update.transition, ModeTransition::EnterBuff);
         assert_eq!(update.previous_task_mode, Some(TaskMode::AutoShot));
         assert!(update.runtime_switch.clear_mode_queues);
-        assert!(update.runtime_switch.reset_buff_state);
         assert!(!update.runtime_switch.yolo_active);
         assert!(!update.runtime_switch.fire_control_active);
         assert!(update.runtime_switch.buff_preprocess_active);
@@ -282,7 +290,6 @@ mod tests {
 
         assert_eq!(update.transition, ModeTransition::Unchanged);
         assert!(!update.runtime_switch.clear_mode_queues);
-        assert!(!update.runtime_switch.reset_buff_state);
         assert_eq!(context.current_task_mode(), Some(TaskMode::HitSmallBuff));
         assert_eq!(context.active_route(), Some(ModeRoute::Buff));
         assert_eq!(context.transition_seq(), 1);
@@ -297,7 +304,6 @@ mod tests {
 
         assert_eq!(update.transition, ModeTransition::EnterOutpost);
         assert!(update.runtime_switch.clear_mode_queues);
-        assert!(!update.runtime_switch.reset_buff_state);
         assert!(update.runtime_switch.yolo_preprocess_active);
         assert!(update.runtime_switch.yolo_active);
         assert!(update.runtime_switch.fire_control_active);
@@ -332,5 +338,17 @@ mod tests {
         assert_eq!(context.active_route(), None);
         assert_eq!(context.transition_seq(), 0);
         assert_eq!(context.last_transition_at(), None);
+    }
+
+    #[test]
+    fn initial_task_mode_starts_without_transition_action() {
+        let mut context = ModeContext::with_initial_task_mode(TaskMode::AutoShot);
+
+        let update = context.apply_feedback(&feedback(TaskMode::AutoShot));
+
+        assert_eq!(update.transition, ModeTransition::Unchanged);
+        assert!(!update.runtime_switch.clear_mode_queues);
+        assert_eq!(context.active_route(), Some(ModeRoute::AutoShot));
+        assert_eq!(context.transition_seq(), 0);
     }
 }

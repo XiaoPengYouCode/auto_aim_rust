@@ -2,8 +2,8 @@ extern crate ndarray as nd;
 extern crate rerun as rr;
 
 use crate::rbt_threads::{
-    PlannerTrackSnapshot, control_loop_250hz, estimate_process, infer, post_process, pre_process,
-    video_input_path,
+    PlannerTrackSnapshot, RuntimePipelineQueues, control_loop_250hz, estimate_process, infer,
+    post_process, pre_process, video_input_path,
 };
 use auto_aim_rust::rbt_infra::rbt_log;
 use lib as auto_aim_rust;
@@ -13,6 +13,7 @@ use lib::rbt_infra::rbt_ort_ep::configure_session_builder;
 use lib::rbt_infra::rbt_queue_async::RbtSPSCQueueAsync;
 use lib::rbt_mod::rbt_comm::rbt_comm_frame::SensData;
 use lib::rbt_mod::rbt_detector::rbt_frame::RbtFrame;
+use lib::rbt_mod::rbt_runtime_router::RuntimeRouter;
 use lib::rbt_mod::rbt_solver::RbtSolvedResults;
 use log::info;
 use ort::session::Session;
@@ -70,6 +71,13 @@ async fn main() -> RbtResult<()> {
     let solved_queue = Arc::new(RbtSPSCQueueAsync::<RbtSolvedResults>::new(1));
     let track_queue = Arc::new(RbtSPSCQueueAsync::<PlannerTrackSnapshot>::new(1));
     let feedback_queue = Arc::new(RbtSPSCQueueAsync::<SensData>::new(1));
+    let runtime_queues = RuntimePipelineQueues::new(
+        pre_infer_queue.clone(),
+        infer_post_queue.clone(),
+        solved_queue.clone(),
+        track_queue.clone(),
+    );
+    let runtime_router = RuntimeRouter::default();
     let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
 
     let model_path = Path::new(cfg.detector_cfg.armor.model_path.as_str());
@@ -94,11 +102,36 @@ async fn main() -> RbtResult<()> {
         .commit_from_file(cfg.detector_cfg.armor.model_path.as_str())?;
 
     // let session = Arc::new(Mutex::new(session));
-    let pre_task_handler = pre_process(pre_infer_queue.clone(), cfg.detector_cfg.clone());
-    let infer_task_handler = infer(pre_infer_queue, session, infer_post_queue.clone());
-    let post_task_handler = post_process(infer_post_queue, solved_queue.clone(), cfg, rec.clone());
-    let estimate_task_handler = estimate_process(solved_queue, track_queue.clone(), rec);
-    let control_task_handler = control_loop_250hz(track_queue, feedback_queue);
+    let pre_task_handler = pre_process(
+        pre_infer_queue.clone(),
+        cfg.detector_cfg.clone(),
+        runtime_router.clone(),
+    );
+    let infer_task_handler = infer(
+        pre_infer_queue.clone(),
+        session,
+        infer_post_queue.clone(),
+        runtime_router.clone(),
+    );
+    let post_task_handler = post_process(
+        infer_post_queue.clone(),
+        solved_queue.clone(),
+        cfg,
+        rec.clone(),
+        runtime_router.clone(),
+    );
+    let estimate_task_handler = estimate_process(
+        solved_queue.clone(),
+        track_queue.clone(),
+        rec,
+        runtime_router.clone(),
+    );
+    let control_task_handler = control_loop_250hz(
+        track_queue.clone(),
+        feedback_queue,
+        runtime_router,
+        runtime_queues,
+    );
 
     let tim = std::time::Instant::now();
     let (_, _, _, _, _) = tokio::join!(
