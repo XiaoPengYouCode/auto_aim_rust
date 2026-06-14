@@ -11,10 +11,10 @@ This checklist tracks the functional gaps found while comparing this Rust worksp
 | [x] P0 YPD geometry recovery | 有 armor jump 后几何恢复、协方差膨胀 | tracker 在多装甲板观测后打开 recovery window，并在连续几何 mismatch 后膨胀 `dr/h` covariance | 已补齐跳板、错配、重获相关基础恢复逻辑 |
 | [x] P0 前哨站特化 | outpost 高度相位锁定、半径先验、yaw 恢复 | tracker 已做 outpost observed/radial yaw 转换、高度相位锁定、锁定高度冻结、半径先验和 rejected update 门控 | 已补齐前哨站专用 tracker 路径 |
 | [x] P0 能量机关 R 圆心/切换门控 | `Buff_Detector` 有 R 圆心修正、模板/轮廓 fallback、锁定门控 | solve stage 已修正不一致 R 圆心几何，tracker 已对大符目标切换做 defer/rebind phase gate | 本轮补了 R 圆心和切换门控；模板/轮廓 fallback 仍未纳入 |
-| [ ] P0 能量机关 tracker/aimer | 相位 EKF、大小符曲线模型、相位化预瞄、pitch lead | 轻量 roll/rate tracker + 固定预瞄 | 当前是骨架，不是成熟打符闭环 |
-| [ ] P1 主线热更新调参 | `param.yaml` 每秒 reload，曝光/发控/MPC 可调 | 只有实验入口，主线没接 watcher | 上车调参效率会差 |
-| [ ] P1 配置面补齐 | 大量曝光、门控、MPC、buff 参数 | `rbt_cfg.toml` 主要是 detector/cam/estimator | 先补实车必要 knob |
-| [ ] P1 PnP 稳态保护 | 角点细化、位姿 sanity gate | 直接网络角点 + IPPE | 建议补，降低跳点 |
+| [x] P0 能量机关 tracker/aimer | 相位 EKF、大小符曲线模型、相位化预瞄、pitch lead | 大符曲线 EKF（基于共享不定长 EKF）+ 两轮飞行时间迭代 + yaw preview horizon + pitch lead + 配置化偏置 | 大符走 `BigBuffCurveEskf` 曲线预测（`speed=a·sin(phase)+base-a`），小符保留常速；aimer 两轮弹道迭代、yaw MPC horizon 由 tracker 预瞄生成 |
+| [ ] P1 主线热更新调参 | `param.yaml` 每秒 reload，曝光/发控/MPC 可调 | 只有实验入口，主线没接 watcher | 上车调参效率会差。本轮不做热更新，配置仅启动加载 |
+| [x] P1 配置面补齐 | 大量曝光、门控、MPC、buff 参数 | `rbt_cfg.toml` 主要是 detector/cam/estimator | 新增顶层 `energy_mechanism_cfg`（tracker/aimer/mpc），补齐大符曲线 EKF 全部 knob，serde 默认值保证旧配置兼容 |
+| [ ] P1 PnP 稳态保护 | 角点细化、位姿 sanity gate | 直接网络角点 + IPPE | 建议补，降低跳点。本轮延期 |
 | [ ] P1 离线录制/回放 | 可录 `.avi + .csv`，强制 task mode 回放 | 缺主链路复盘工具 | 调现场问题很关键 |
 | [ ] P1 通信/MPC smoke 工具 | `testSerial`、`can_mpc_yaw_test` 工具链完整 | `comm_test` 基本空 | 接 CAN 后应尽快补 |
 | [ ] P2 显示/HUD/录制旁路 | MJPEG/Rerun/HUD/CSV/plot 脚本多 | 有 Rerun 和日志，但观测面较薄 | 影响调试效率 |

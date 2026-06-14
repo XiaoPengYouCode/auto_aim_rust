@@ -119,6 +119,221 @@ fn default_energy_fire_gap_s() -> f64 {
     0.2
 }
 
+/// 能量机关顶层配置：tracker / aimer / mpc 三段。
+///
+/// 检测相关参数继续放在 `EnergyMechanismDetectorCfg`；这里只覆盖跟踪、瞄准与控制。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Default)]
+pub struct EnergyMechanismCfg {
+    #[serde(default)]
+    pub tracker: EnergyMechanismTrackerCfg,
+    #[serde(default)]
+    pub aimer: EnergyMechanismAimerCfg,
+    #[serde(default)]
+    pub mpc: EnergyMechanismMpcCfg,
+}
+
+/// 能量机关 tracker 配置（小符常速 + 大符曲线 EKF）。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct EnergyMechanismTrackerCfg {
+    #[serde(default = "default_tracker_lost_timeout_s")]
+    pub lost_timeout_s: f64,
+    #[serde(default = "default_tracker_big_lost_timeout_s")]
+    pub big_lost_timeout_s: f64,
+    #[serde(default = "default_tracker_big_model_reset_timeout_s")]
+    pub big_model_reset_timeout_s: f64,
+    #[serde(default = "default_tracker_big_curve_ekf_fit_enabled")]
+    pub big_curve_ekf_fit_enabled: bool,
+    #[serde(default = "default_tracker_big_phase_process_noise")]
+    pub big_phase_process_noise: f64,
+    #[serde(default = "default_tracker_big_a_process_noise")]
+    pub big_a_process_noise: f64,
+    #[serde(default = "default_tracker_big_w_process_noise")]
+    pub big_w_process_noise: f64,
+    #[serde(default = "default_tracker_big_measurement_noise_scale")]
+    pub big_measurement_noise_scale: f64,
+    #[serde(default = "default_tracker_big_speed_measurement_enabled")]
+    pub big_speed_measurement_enabled: bool,
+    #[serde(default = "default_tracker_big_speed_measurement_noise")]
+    pub big_speed_measurement_noise: f64,
+    #[serde(default = "default_tracker_big_speed_measurement_gate")]
+    pub big_speed_measurement_gate: f64,
+    #[serde(default = "default_tracker_big_curve_speed_slew_limit")]
+    pub big_curve_speed_slew_limit: f64,
+    #[serde(default = "default_tracker_big_speed_measurement_window_samples")]
+    pub big_speed_measurement_window_samples: usize,
+    #[serde(default = "default_tracker_big_speed_measurement_window_s")]
+    pub big_speed_measurement_window_s: f64,
+    #[serde(default = "default_tracker_big_speed_measurement_min_history")]
+    pub big_speed_measurement_min_history: usize,
+    #[serde(default = "default_tracker_big_curve_phi_correction_limit")]
+    pub big_curve_phi_correction_limit: f64,
+    #[serde(default = "default_tracker_big_phi_seed_frames")]
+    pub big_phi_seed_frames: usize,
+}
+
+impl Default for EnergyMechanismTrackerCfg {
+    fn default() -> Self {
+        Self {
+            lost_timeout_s: default_tracker_lost_timeout_s(),
+            big_lost_timeout_s: default_tracker_big_lost_timeout_s(),
+            big_model_reset_timeout_s: default_tracker_big_model_reset_timeout_s(),
+            big_curve_ekf_fit_enabled: default_tracker_big_curve_ekf_fit_enabled(),
+            big_phase_process_noise: default_tracker_big_phase_process_noise(),
+            big_a_process_noise: default_tracker_big_a_process_noise(),
+            big_w_process_noise: default_tracker_big_w_process_noise(),
+            big_measurement_noise_scale: default_tracker_big_measurement_noise_scale(),
+            big_speed_measurement_enabled: default_tracker_big_speed_measurement_enabled(),
+            big_speed_measurement_noise: default_tracker_big_speed_measurement_noise(),
+            big_speed_measurement_gate: default_tracker_big_speed_measurement_gate(),
+            big_curve_speed_slew_limit: default_tracker_big_curve_speed_slew_limit(),
+            big_speed_measurement_window_samples:
+                default_tracker_big_speed_measurement_window_samples(),
+            big_speed_measurement_window_s: default_tracker_big_speed_measurement_window_s(),
+            big_speed_measurement_min_history: default_tracker_big_speed_measurement_min_history(),
+            big_curve_phi_correction_limit: default_tracker_big_curve_phi_correction_limit(),
+            big_phi_seed_frames: default_tracker_big_phi_seed_frames(),
+        }
+    }
+}
+
+fn default_tracker_lost_timeout_s() -> f64 {
+    0.35
+}
+fn default_tracker_big_lost_timeout_s() -> f64 {
+    0.08
+}
+fn default_tracker_big_model_reset_timeout_s() -> f64 {
+    0.35
+}
+fn default_tracker_big_curve_ekf_fit_enabled() -> bool {
+    true
+}
+fn default_tracker_big_phase_process_noise() -> f64 {
+    0.02
+}
+fn default_tracker_big_a_process_noise() -> f64 {
+    1e-6
+}
+fn default_tracker_big_w_process_noise() -> f64 {
+    3e-6
+}
+fn default_tracker_big_measurement_noise_scale() -> f64 {
+    4.0
+}
+fn default_tracker_big_speed_measurement_enabled() -> bool {
+    true
+}
+fn default_tracker_big_speed_measurement_noise() -> f64 {
+    1.50
+}
+fn default_tracker_big_speed_measurement_gate() -> f64 {
+    1.2
+}
+fn default_tracker_big_curve_speed_slew_limit() -> f64 {
+    3.0
+}
+fn default_tracker_big_speed_measurement_window_samples() -> usize {
+    16
+}
+fn default_tracker_big_speed_measurement_window_s() -> f64 {
+    0.30
+}
+fn default_tracker_big_speed_measurement_min_history() -> usize {
+    20
+}
+fn default_tracker_big_curve_phi_correction_limit() -> f64 {
+    0.0
+}
+fn default_tracker_big_phi_seed_frames() -> usize {
+    15
+}
+
+/// 能量机关 aimer 配置。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct EnergyMechanismAimerCfg {
+    #[serde(default)]
+    pub predict_time_s: f64,
+    #[serde(default = "default_aimer_fire_gap_s")]
+    pub fire_gap_s: f64,
+    #[serde(default)]
+    pub yaw_offset_deg: f64,
+    #[serde(default)]
+    pub pitch_offset_deg: f64,
+    #[serde(default)]
+    pub pitch_velocity_lead_time_s: f64,
+    #[serde(default = "default_aimer_snapshot_stale_ms")]
+    pub snapshot_stale_ms: f64,
+}
+
+impl Default for EnergyMechanismAimerCfg {
+    fn default() -> Self {
+        Self {
+            predict_time_s: 0.0,
+            fire_gap_s: default_aimer_fire_gap_s(),
+            yaw_offset_deg: 0.0,
+            pitch_offset_deg: 0.0,
+            pitch_velocity_lead_time_s: 0.0,
+            snapshot_stale_ms: default_aimer_snapshot_stale_ms(),
+        }
+    }
+}
+
+fn default_aimer_fire_gap_s() -> f64 {
+    0.2
+}
+fn default_aimer_snapshot_stale_ms() -> f64 {
+    180.0
+}
+
+/// 能量机关 MPC 配置（直接映射 `SecondOrderPositionMpcConfig` 关键字段）。
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct EnergyMechanismMpcCfg {
+    #[serde(default = "default_mpc_model_dt_s")]
+    pub model_dt_s: f64,
+    #[serde(default = "default_mpc_horizon")]
+    pub horizon: usize,
+    #[serde(default = "default_mpc_track_q")]
+    pub track_q: f64,
+    #[serde(default = "default_mpc_rate_q")]
+    pub rate_q: f64,
+    #[serde(default = "default_mpc_command_q")]
+    pub command_q: f64,
+    #[serde(default = "default_mpc_delta_r")]
+    pub delta_r: f64,
+}
+
+impl Default for EnergyMechanismMpcCfg {
+    fn default() -> Self {
+        Self {
+            model_dt_s: default_mpc_model_dt_s(),
+            horizon: default_mpc_horizon(),
+            track_q: default_mpc_track_q(),
+            rate_q: default_mpc_rate_q(),
+            command_q: default_mpc_command_q(),
+            delta_r: default_mpc_delta_r(),
+        }
+    }
+}
+
+fn default_mpc_model_dt_s() -> f64 {
+    0.004
+}
+fn default_mpc_horizon() -> usize {
+    50
+}
+fn default_mpc_track_q() -> f64 {
+    3_198.0
+}
+fn default_mpc_rate_q() -> f64 {
+    0.0
+}
+fn default_mpc_command_q() -> f64 {
+    1_000.0
+}
+fn default_mpc_delta_r() -> f64 {
+    48_343.0
+}
+
 /// 相机相关配置
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
 pub struct CamCfg {
@@ -215,6 +430,8 @@ pub struct RbtCfg {
     pub cam_cfg: CamCfg,
     pub logger_cfg: LoggerCfg,
     pub estimator_cfg: EstimatorCfg,
+    #[serde(default)]
+    pub energy_mechanism_cfg: EnergyMechanismCfg,
 }
 
 impl RbtCfg {

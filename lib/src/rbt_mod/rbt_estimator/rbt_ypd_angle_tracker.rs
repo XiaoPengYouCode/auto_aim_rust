@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 
+use crate::rbt_base::rbt_algorithm::rbt_ekf::ExtendedKalmanFilter;
 use crate::rbt_infra::rbt_cfg::EstimatorCfg;
 
 const STATE_DIM: usize = 11;
@@ -134,8 +135,7 @@ pub struct YpdAngleTracker {
     update_count: usize,
     tracker_time_s: f64,
     is_converged: bool,
-    x: na::SVector<f64, STATE_DIM>,
-    p: na::SMatrix<f64, STATE_DIM, STATE_DIM>,
+    ekf: ExtendedKalmanFilter,
     last_nis: f64,
     recent_nis_failures: VecDeque<bool>,
     last_batch_match_ids: Vec<isize>,
@@ -153,6 +153,26 @@ pub struct YpdAngleTracker {
 }
 
 impl YpdAngleTracker {
+    /// 当前名义状态（11 维 CV 模型）。
+    pub fn x(&self) -> &na::DVector<f64> {
+        &self.ekf.x
+    }
+
+    /// 当前协方差矩阵。
+    pub fn p(&self) -> &na::DMatrix<f64> {
+        &self.ekf.p
+    }
+
+    /// 可变借用名义状态。
+    fn x_mut(&mut self) -> &mut na::DVector<f64> {
+        &mut self.ekf.x
+    }
+
+    /// 可变借用协方差矩阵。
+    fn p_mut(&mut self) -> &mut na::DMatrix<f64> {
+        &mut self.ekf.p
+    }
+
     pub fn new() -> Self {
         let mut tracker = Self {
             initialized: false,
@@ -162,8 +182,10 @@ impl YpdAngleTracker {
             update_count: 0,
             tracker_time_s: 0.0,
             is_converged: false,
-            x: na::SVector::<f64, STATE_DIM>::zeros(),
-            p: na::SMatrix::<f64, STATE_DIM, STATE_DIM>::identity(),
+            ekf: ExtendedKalmanFilter::with_initial(
+                na::DVector::zeros(STATE_DIM),
+                na::DMatrix::identity(STATE_DIM, STATE_DIM),
+            ),
             last_nis: 0.0,
             recent_nis_failures: VecDeque::from([false]),
             last_batch_match_ids: Vec::new(),
@@ -191,8 +213,10 @@ impl YpdAngleTracker {
         self.update_count = 0;
         self.tracker_time_s = 0.0;
         self.is_converged = false;
-        self.x.fill(0.0);
-        self.p = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::identity();
+        self.ekf.init(
+            na::DVector::zeros(STATE_DIM),
+            na::DMatrix::identity(STATE_DIM, STATE_DIM),
+        );
         self.last_nis = 0.0;
         self.recent_nis_failures.clear();
         self.recent_nis_failures.push_back(false);
@@ -224,13 +248,16 @@ impl YpdAngleTracker {
 
         let yaw = radial_yaw_from_observed_yaw(observation.yaw_rad, self.armor_num);
         let sign = radial_sign(self.armor_num);
-        self.x[0] = observation.position_mm.x - sign * radius * yaw.cos();
-        self.x[2] = observation.position_mm.y - sign * radius * yaw.sin();
-        self.x[4] = observation.position_mm.z;
-        self.x[6] = yaw;
-        self.x[8] = radius;
-
-        self.p = if self.is_outpost {
+        let x0 = {
+            let mut v = na::DVector::zeros(STATE_DIM);
+            v[0] = observation.position_mm.x - sign * radius * yaw.cos();
+            v[2] = observation.position_mm.y - sign * radius * yaw.sin();
+            v[4] = observation.position_mm.z;
+            v[6] = yaw;
+            v[8] = radius;
+            v
+        };
+        let p0 = if self.is_outpost {
             diagonal_matrix([
                 1_000.0, 64_000.0, 1_000.0, 64_000.0, 1_000.0, 81_000.0, 0.4, 100.0, 100.0,
                 90_000.0, 90_000.0,
@@ -241,6 +268,7 @@ impl YpdAngleTracker {
                 10_000.0, 10_000.0,
             ])
         };
+        self.ekf.init(x0, p0);
 
         self.initialized = true;
         self.tracked_id = self.select_best_armor_id(observation);
@@ -263,19 +291,19 @@ impl YpdAngleTracker {
         };
         self.tracker_time_s += dt;
 
-        if self.is_outpost && self.converged() && self.x[7].abs() > 2.0 {
-            self.x[7] = self.x[7].signum() * 2.51;
+        if self.is_outpost && self.converged() && self.x()[7].abs() > 2.0 {
+            self.x_mut()[7] = self.x()[7].signum() * 2.51;
         }
 
-        let mut f = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::identity();
+        let mut f = na::DMatrix::<f64>::identity(STATE_DIM, STATE_DIM);
         f[(0, 1)] = dt;
         f[(2, 3)] = dt;
         f[(4, 5)] = dt;
         f[(6, 7)] = dt;
+        let q = self.process_noise(dt);
 
-        self.x = f * self.x;
-        self.x[6] = normalize_angle(self.x[6]);
-        self.p = symmetrize(f * self.p * f.transpose() + self.process_noise(dt));
+        self.ekf.predict(&f, &q);
+        self.x_mut()[6] = normalize_angle(self.x()[6]);
         self.clamp_geometry();
     }
 
@@ -360,17 +388,17 @@ impl YpdAngleTracker {
 
         let tracked_armor_xyza = self.predicted_armor_state(self.tracked_id);
         let mut state11d = [0.0; STATE_DIM];
-        state11d.copy_from_slice(self.x.as_slice());
+        state11d.copy_from_slice(self.x().as_slice());
 
         let mut state9 = [0.0; 9];
-        state9[0] = self.x[0];
-        state9[1] = self.x[1];
-        state9[2] = self.x[2];
-        state9[3] = self.x[3];
+        state9[0] = self.x()[0];
+        state9[1] = self.x()[1];
+        state9[2] = self.x()[2];
+        state9[3] = self.x()[3];
         state9[4] = tracked_armor_xyza[2];
-        state9[5] = self.x[5];
+        state9[5] = self.x()[5];
         state9[6] = tracked_armor_xyza[3];
-        state9[7] = self.x[7];
+        state9[7] = self.x()[7];
         state9[8] = self.armor_radius(self.tracked_id);
 
         Some(YpdTrackerSnapshot {
@@ -397,18 +425,18 @@ impl YpdAngleTracker {
             return false;
         }
         let primary_ok =
-            self.x[PRIMARY_RADIUS] > MIN_RADIUS_MM && self.x[PRIMARY_RADIUS] < MAX_RADIUS_MM;
+            self.x()[PRIMARY_RADIUS] > MIN_RADIUS_MM && self.x()[PRIMARY_RADIUS] < MAX_RADIUS_MM;
         if !primary_ok {
             return true;
         }
         if self.armor_num == 4 {
-            let secondary = self.x[PRIMARY_RADIUS] + self.x[DELTA_RADIUS];
+            let secondary = self.x()[PRIMARY_RADIUS] + self.x()[DELTA_RADIUS];
             !(secondary > MIN_RADIUS_MM && secondary < MAX_RADIUS_MM)
         } else {
-            !self.x[DELTA_RADIUS].is_finite()
-                || !self.x[HEIGHT_DIFF].is_finite()
-                || self.x[DELTA_RADIUS].abs() > OUTPOST_MAX_HEIGHT_OFFSET_MM
-                || self.x[HEIGHT_DIFF].abs() > OUTPOST_MAX_HEIGHT_OFFSET_MM
+            !self.x()[DELTA_RADIUS].is_finite()
+                || !self.x()[HEIGHT_DIFF].is_finite()
+                || self.x()[DELTA_RADIUS].abs() > OUTPOST_MAX_HEIGHT_OFFSET_MM
+                || self.x()[HEIGHT_DIFF].abs() > OUTPOST_MAX_HEIGHT_OFFSET_MM
         }
     }
 
@@ -430,14 +458,14 @@ impl YpdAngleTracker {
         self.is_converged
     }
 
-    fn process_noise(&self, dt: f64) -> na::SMatrix<f64, STATE_DIM, STATE_DIM> {
+    fn process_noise(&self, dt: f64) -> na::DMatrix<f64> {
         let pos_noise = if self.is_outpost { 10_000.0 } else { 100_000.0 };
         let yaw_noise = if self.is_outpost { 0.1 } else { 400.0 };
         let a = dt.powi(4) / 4.0;
         let b = dt.powi(3) / 2.0;
         let c = dt * dt;
 
-        let mut q = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::zeros();
+        let mut q = na::DMatrix::<f64>::zeros(STATE_DIM, STATE_DIM);
         for (pos, vel, noise) in [
             (0, 1, pos_noise),
             (2, 3, pos_noise),
@@ -452,11 +480,7 @@ impl YpdAngleTracker {
         q
     }
 
-    fn predicted_armor_position(
-        &self,
-        state: &na::SVector<f64, STATE_DIM>,
-        id: usize,
-    ) -> na::Point3<f64> {
+    fn predicted_armor_position(&self, state: &na::DVector<f64>, id: usize) -> na::Point3<f64> {
         let angle =
             normalize_angle(state[6] + id as f64 * std::f64::consts::TAU / self.armor_num as f64);
         let radius = radius_from_state(state, self.armor_num, id);
@@ -471,9 +495,9 @@ impl YpdAngleTracker {
     fn predicted_armor_state(&self, id: usize) -> [f64; 4] {
         let clamped_id = id.min(self.armor_num.saturating_sub(1));
         let angle = normalize_angle(
-            self.x[6] + clamped_id as f64 * std::f64::consts::TAU / self.armor_num as f64,
+            self.x()[6] + clamped_id as f64 * std::f64::consts::TAU / self.armor_num as f64,
         );
-        let position = self.predicted_armor_position(&self.x, clamped_id);
+        let position = self.predicted_armor_position(self.x(), clamped_id);
         [
             position.x,
             position.y,
@@ -482,28 +506,20 @@ impl YpdAngleTracker {
         ]
     }
 
-    fn predicted_measurement(
-        &self,
-        state: &na::SVector<f64, STATE_DIM>,
-        id: usize,
-    ) -> na::SVector<f64, 4> {
+    fn predicted_measurement(&self, state: &na::DVector<f64>, id: usize) -> na::DVector<f64> {
         let position = self.predicted_armor_position(state, id);
         let ypd = xyz_to_ypd(position);
         let angle =
             normalize_angle(state[6] + id as f64 * std::f64::consts::TAU / self.armor_num as f64);
-        na::SVector::<f64, 4>::new(
+        na::DVector::from_vec(vec![
             ypd.x,
             ypd.y,
             ypd.z,
             observed_yaw_from_radial_yaw(angle, self.armor_num),
-        )
+        ])
     }
 
-    fn measurement_jacobian(
-        &self,
-        state: &na::SVector<f64, STATE_DIM>,
-        id: usize,
-    ) -> na::SMatrix<f64, 4, STATE_DIM> {
+    fn measurement_jacobian(&self, state: &na::DVector<f64>, id: usize) -> na::DMatrix<f64> {
         let angle =
             normalize_angle(state[6] + id as f64 * std::f64::consts::TAU / self.armor_num as f64);
         let use_secondary_radius = self.armor_num == 4 && (id == 1 || id == 3);
@@ -514,7 +530,7 @@ impl YpdAngleTracker {
             state[PRIMARY_RADIUS]
         };
 
-        let mut h_xyza = na::SMatrix::<f64, 4, STATE_DIM>::zeros();
+        let mut h_xyza = na::DMatrix::<f64>::zeros(4, STATE_DIM);
         h_xyza[(0, 0)] = 1.0;
         h_xyza[(0, 6)] = -sign * radius * angle.sin();
         h_xyza[(0, PRIMARY_RADIUS)] = sign * angle.cos();
@@ -550,19 +566,23 @@ impl YpdAngleTracker {
         h_xyza[(3, 6)] = 1.0;
 
         let h_ypd = xyz_to_ypd_jacobian(self.predicted_armor_position(state, id));
-        let mut h_ypda = na::SMatrix::<f64, 4, 4>::zeros();
-        h_ypda.fixed_view_mut::<3, 3>(0, 0).copy_from(&h_ypd);
+        let mut h_ypda = na::DMatrix::<f64>::zeros(4, 4);
+        for row in 0..3 {
+            for col in 0..3 {
+                h_ypda[(row, col)] = h_ypd[(row, col)];
+            }
+        }
         h_ypda[(3, 3)] = 1.0;
         h_ypda * h_xyza
     }
 
-    fn measurement_noise(&self, observation: &YpdObservation) -> na::SMatrix<f64, 4, 4> {
+    fn measurement_noise(&self, observation: &YpdObservation) -> na::DMatrix<f64> {
         let ypd = xyz_to_ypd(observation.position_mm);
         let center_yaw = observation.position_mm.y.atan2(observation.position_mm.x);
         let delta_angle = normalize_angle(observation.yaw_rad - center_yaw).abs();
         let distance_sigma_mm = (ypd.z.abs() * 0.03).clamp(10.0, 250.0);
 
-        let mut r = na::SMatrix::<f64, 4, 4>::zeros();
+        let mut r = na::DMatrix::<f64>::zeros(4, 4);
         r[(0, 0)] = 4e-3;
         r[(1, 1)] = 4e-3;
         r[(2, 2)] = distance_sigma_mm * distance_sigma_mm;
@@ -590,22 +610,19 @@ impl YpdAngleTracker {
     fn correct_with_observation(&mut self, observation: &YpdObservation, id: usize) -> bool {
         let matched_id = id.min(self.armor_num.saturating_sub(1));
         let ypd = xyz_to_ypd(observation.position_mm);
-        let z = na::SVector::<f64, 4>::new(ypd.x, ypd.y, ypd.z, observation.yaw_rad);
-        let h = self.measurement_jacobian(&self.x, matched_id);
+        let z = na::DVector::from_vec(vec![ypd.x, ypd.y, ypd.z, observation.yaw_rad]);
+        let h = self.measurement_jacobian(self.x(), matched_id);
         let r = self.measurement_noise(observation);
-        let predicted = self.predicted_measurement(&self.x, matched_id);
-        let mut residual = z - predicted;
-        residual[0] = normalize_angle(residual[0]);
-        residual[1] = normalize_angle(residual[1]);
-        residual[3] = normalize_angle(residual[3]);
-
-        let s = h * self.p * h.transpose() + r;
-        let Some(s_inv) = s.try_inverse() else {
-            self.record_nis(f64::INFINITY);
-            return false;
+        let predicted = self.predicted_measurement(self.x(), matched_id);
+        let residual_fn = |a: &na::DVector<f64>, b: &na::DVector<f64>| {
+            let mut diff = a - b;
+            diff[0] = normalize_angle(diff[0]);
+            diff[1] = normalize_angle(diff[1]);
+            diff[3] = normalize_angle(diff[3]);
+            diff
         };
-        let prior_nis = residual.transpose() * s_inv * residual;
-        let prior_nis = prior_nis[(0, 0)];
+        let prior_nis = self.ekf.nis(&z, &h, &r, &predicted, residual_fn);
+
         if self.is_outpost
             && self.update_count >= OUTPOST_PRIOR_GATE_MIN_UPDATES
             && prior_nis.is_finite()
@@ -616,15 +633,16 @@ impl YpdAngleTracker {
             return false;
         }
 
-        let k = self.p * h.transpose() * s_inv;
-        let i = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::identity();
-        self.x += k * residual;
-        self.x[6] = normalize_angle(self.x[6]);
-        self.p = symmetrize((i - k * h) * self.p * (i - k * h).transpose() + k * r * k.transpose());
+        let (accepted, nis) = self.ekf.update(&z, &h, &r, &predicted, residual_fn);
+        if !accepted {
+            self.record_nis(f64::INFINITY);
+            return false;
+        }
+        self.x_mut()[6] = normalize_angle(self.x()[6]);
         self.apply_outpost_radius_prior();
         self.clamp_geometry();
 
-        self.record_nis(prior_nis);
+        self.record_nis(nis);
         self.update_count += 1;
         self.consecutive_rejected_updates = 0;
         true
@@ -635,7 +653,7 @@ impl YpdAngleTracker {
         observation: &YpdObservation,
         id: usize,
     ) -> GeometryRecoverySample {
-        let predicted = self.predicted_armor_position(&self.x, id.min(self.armor_num - 1));
+        let predicted = self.predicted_armor_position(self.x(), id.min(self.armor_num - 1));
         let residual = observation.position_mm - predicted;
         GeometryRecoverySample {
             xy_residual_mm: residual.x.hypot(residual.y),
@@ -666,8 +684,8 @@ impl YpdAngleTracker {
             .map(|sample| sample.z_residual_mm)
             .sum::<f64>()
             / samples.len() as f64;
-        let sigma_dr = self.p[(DELTA_RADIUS, DELTA_RADIUS)].max(1e-9).sqrt();
-        let sigma_h = self.p[(HEIGHT_DIFF, HEIGHT_DIFF)].max(1e-9).sqrt();
+        let sigma_dr = self.p()[(DELTA_RADIUS, DELTA_RADIUS)].max(1e-9).sqrt();
+        let sigma_h = self.p()[(HEIGHT_DIFF, HEIGHT_DIFF)].max(1e-9).sqrt();
         let xy_over_sigma_dr = mean_xy / sigma_dr;
         let z_over_sigma_h = mean_z / sigma_h;
         let mismatch = z_over_sigma_h.is_finite()
@@ -701,17 +719,18 @@ impl YpdAngleTracker {
         let min_dr_var_mm2 = cfg.ypd_geometry_recovery_min_dr_variance.max(0.0) * M2_TO_MM2;
         let min_h_var_mm2 = cfg.ypd_geometry_recovery_min_h_variance.max(0.0) * M2_TO_MM2;
 
+        let p = self.p_mut();
         for index in [DELTA_RADIUS, HEIGHT_DIFF] {
             for col in 0..STATE_DIM {
-                self.p[(index, col)] *= scale.sqrt();
-                self.p[(col, index)] = self.p[(index, col)];
+                p[(index, col)] *= scale.sqrt();
+                p[(col, index)] = p[(index, col)];
             }
         }
-        self.p[(DELTA_RADIUS, DELTA_RADIUS)] =
-            (self.p[(DELTA_RADIUS, DELTA_RADIUS)] * scale).max(min_dr_var_mm2);
-        self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] =
-            (self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] * scale).max(min_h_var_mm2);
-        self.p = symmetrize(self.p);
+        p[(DELTA_RADIUS, DELTA_RADIUS)] =
+            (p[(DELTA_RADIUS, DELTA_RADIUS)] * scale).max(min_dr_var_mm2);
+        p[(HEIGHT_DIFF, HEIGHT_DIFF)] = (p[(HEIGHT_DIFF, HEIGHT_DIFF)] * scale).max(min_h_var_mm2);
+        let sym = symmetrize_dynamic(p);
+        *p = sym;
     }
 
     fn assign_armor_ids(&self, observations: &[YpdObservation]) -> Vec<Option<usize>> {
@@ -736,10 +755,10 @@ impl YpdAngleTracker {
     }
 
     fn armor_radius(&self, id: usize) -> f64 {
-        radius_from_state(&self.x, self.armor_num, id)
+        radius_from_state(self.x(), self.armor_num, id)
     }
 
-    fn height_offset_for_id(&self, state: &na::SVector<f64, STATE_DIM>, id: usize) -> f64 {
+    fn height_offset_for_id(&self, state: &na::DVector<f64>, id: usize) -> f64 {
         if self.outpost_height_phase_locked() {
             self.outpost_height_offset_for_id(id)
         } else {
@@ -764,21 +783,27 @@ impl YpdAngleTracker {
     }
 
     fn clamp_geometry(&mut self) {
-        self.x[PRIMARY_RADIUS] = self.x[PRIMARY_RADIUS].clamp(MIN_RADIUS_MM, MAX_RADIUS_MM);
-        if self.armor_num == 4 {
-            let secondary =
-                (self.x[PRIMARY_RADIUS] + self.x[DELTA_RADIUS]).clamp(MIN_RADIUS_MM, MAX_RADIUS_MM);
-            self.x[DELTA_RADIUS] = secondary - self.x[PRIMARY_RADIUS];
-        } else {
-            self.x[PRIMARY_RADIUS] = OUTPOST_RADIUS_MM;
-            if self.outpost_height_phase_locked() {
-                self.apply_locked_outpost_height_offsets();
+        let armor_num = self.armor_num;
+        let locked = self.outpost_height_phase_locked();
+        {
+            let x = self.x_mut();
+            x[PRIMARY_RADIUS] = x[PRIMARY_RADIUS].clamp(MIN_RADIUS_MM, MAX_RADIUS_MM);
+            if armor_num == 4 {
+                let secondary =
+                    (x[PRIMARY_RADIUS] + x[DELTA_RADIUS]).clamp(MIN_RADIUS_MM, MAX_RADIUS_MM);
+                x[DELTA_RADIUS] = secondary - x[PRIMARY_RADIUS];
             } else {
-                self.x[DELTA_RADIUS] = self.x[DELTA_RADIUS]
-                    .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
-                self.x[HEIGHT_DIFF] = self.x[HEIGHT_DIFF]
-                    .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
+                x[PRIMARY_RADIUS] = OUTPOST_RADIUS_MM;
+                if !locked {
+                    x[DELTA_RADIUS] = x[DELTA_RADIUS]
+                        .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
+                    x[HEIGHT_DIFF] = x[HEIGHT_DIFF]
+                        .clamp(-OUTPOST_MAX_HEIGHT_OFFSET_MM, OUTPOST_MAX_HEIGHT_OFFSET_MM);
+                }
             }
+        }
+        if armor_num == 3 && locked {
+            self.apply_locked_outpost_height_offsets();
         }
     }
 
@@ -807,10 +832,10 @@ impl YpdAngleTracker {
         if !self.outpost_height_phase_locked() {
             return;
         }
-        self.x[DELTA_RADIUS] = self.outpost_height_offset_for_id(1);
-        self.x[HEIGHT_DIFF] = self.outpost_height_offset_for_id(2);
-        self.p[(DELTA_RADIUS, DELTA_RADIUS)] = OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2;
-        self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] = OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2;
+        self.x_mut()[DELTA_RADIUS] = self.outpost_height_offset_for_id(1);
+        self.x_mut()[HEIGHT_DIFF] = self.outpost_height_offset_for_id(2);
+        self.p_mut()[(DELTA_RADIUS, DELTA_RADIUS)] = OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2;
+        self.p_mut()[(HEIGHT_DIFF, HEIGHT_DIFF)] = OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2;
     }
 
     fn update_outpost_height_phase(&mut self, observation: &YpdObservation, matched_id: usize) {
@@ -868,7 +893,7 @@ impl YpdAngleTracker {
             self.outpost_height_phase_scores[second] - self.outpost_height_phase_scores[best];
         if candidate_center_z[best].is_finite() && margin >= OUTPOST_HEIGHT_PHASE_LOCK_MARGIN {
             self.outpost_height_phase = Some(best);
-            self.x[4] = candidate_center_z[best];
+            self.x_mut()[4] = candidate_center_z[best];
             self.apply_locked_outpost_height_offsets();
         }
     }
@@ -910,29 +935,37 @@ impl YpdAngleTracker {
             return;
         }
         let prior_variance = OUTPOST_RADIUS_PRIOR_SIGMA_MM * OUTPOST_RADIUS_PRIOR_SIGMA_MM;
-        let innovation_variance = self.p[(PRIMARY_RADIUS, PRIMARY_RADIUS)] + prior_variance;
+        let innovation_variance = self.p()[(PRIMARY_RADIUS, PRIMARY_RADIUS)] + prior_variance;
         if !innovation_variance.is_finite() || innovation_variance <= 1e-9 {
             return;
         }
 
-        let k = self.p.column(PRIMARY_RADIUS) / innovation_variance;
-        self.x += k * (OUTPOST_RADIUS_MM - self.x[PRIMARY_RADIUS]);
-        self.x[6] = normalize_angle(self.x[6]);
+        let k = self.p().column(PRIMARY_RADIUS).into_owned() / innovation_variance;
+        let innovation = OUTPOST_RADIUS_MM - self.x()[PRIMARY_RADIUS];
+        {
+            let x = self.x_mut();
+            for row in 0..STATE_DIM {
+                x[row] += k[row] * innovation;
+            }
+            x[6] = normalize_angle(x[6]);
+        }
 
-        let mut i_kh = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::identity();
+        let mut i_kh = na::DMatrix::<f64>::identity(STATE_DIM, STATE_DIM);
         for row in 0..STATE_DIM {
             i_kh[(row, PRIMARY_RADIUS)] -= k[row];
         }
-        let rk = prior_variance * (k * k.transpose());
-        self.p = symmetrize(i_kh * self.p * i_kh.transpose() + rk);
+        let rk = prior_variance * (&k * k.transpose());
+        let p_new = symmetrize_dynamic(&(&i_kh * self.p() * &i_kh.transpose() + &rk));
+        *self.p_mut() = p_new;
     }
 
     fn append_motion_sample(&mut self) {
+        let (cx, cy, yaw_rate) = (self.x()[0], self.x()[2], self.x()[7]);
         self.motion_history.push_back(MotionSample {
             t_s: self.tracker_time_s,
-            center_x: self.x[0],
-            center_y: self.x[2],
-            yaw_rate: self.x[7],
+            center_x: cx,
+            center_y: cy,
+            yaw_rate,
         });
         while self.motion_history.len() > MOTION_HISTORY_CAPACITY {
             self.motion_history.pop_front();
@@ -978,17 +1011,16 @@ impl Default for YpdAngleTracker {
     }
 }
 
-fn diagonal_matrix(values: [f64; STATE_DIM]) -> na::SMatrix<f64, STATE_DIM, STATE_DIM> {
-    let mut matrix = na::SMatrix::<f64, STATE_DIM, STATE_DIM>::zeros();
+fn diagonal_matrix(values: [f64; STATE_DIM]) -> na::DMatrix<f64> {
+    let mut matrix = na::DMatrix::<f64>::zeros(STATE_DIM, STATE_DIM);
     for (index, value) in values.into_iter().enumerate() {
         matrix[(index, index)] = value;
     }
     matrix
 }
 
-fn symmetrize(
-    matrix: na::SMatrix<f64, STATE_DIM, STATE_DIM>,
-) -> na::SMatrix<f64, STATE_DIM, STATE_DIM> {
+/// 对称化动态大小协方差矩阵：`(M + Mᵀ) / 2`。
+fn symmetrize_dynamic(matrix: &na::DMatrix<f64>) -> na::DMatrix<f64> {
     (matrix + matrix.transpose()) * 0.5
 }
 
@@ -1012,7 +1044,7 @@ fn observed_yaw_from_radial_yaw(radial_yaw: f64, armor_num: usize) -> f64 {
     }
 }
 
-fn radius_from_state(state: &na::SVector<f64, STATE_DIM>, armor_num: usize, id: usize) -> f64 {
+fn radius_from_state(state: &na::DVector<f64>, armor_num: usize, id: usize) -> f64 {
     if armor_num == 4 && (id == 1 || id == 3) {
         state[PRIMARY_RADIUS] + state[DELTA_RADIUS]
     } else {
@@ -1020,11 +1052,7 @@ fn radius_from_state(state: &na::SVector<f64, STATE_DIM>, armor_num: usize, id: 
     }
 }
 
-fn height_offset_from_state(
-    state: &na::SVector<f64, STATE_DIM>,
-    armor_num: usize,
-    id: usize,
-) -> f64 {
+fn height_offset_from_state(state: &na::DVector<f64>, armor_num: usize, id: usize) -> f64 {
     if armor_num == 4 {
         if id == 1 || id == 3 {
             state[HEIGHT_DIFF]
@@ -1233,8 +1261,8 @@ ypd_geometry_recovery_min_h_variance = 0.000625
         let obs = observation(na::Point3::new(1_000.0, 0.0, 100.0), 0.0, 200.0);
         let mut tracker = YpdAngleTracker::new();
         tracker.init(&obs, 4);
-        tracker.x[1] = 100.0;
-        tracker.x[7] = 1.0;
+        tracker.x_mut()[1] = 100.0;
+        tracker.x_mut()[7] = 1.0;
         tracker.predict(0.05);
 
         let snapshot = tracker.snapshot().unwrap();
@@ -1249,10 +1277,10 @@ ypd_geometry_recovery_min_h_variance = 0.000625
         let center = na::Point3::new(1_000.0, 0.0, 100.0);
         let mut tracker = YpdAngleTracker::new();
         tracker.init(&observation(center, 0.0, 200.0), 4);
-        tracker.p[(DELTA_RADIUS, DELTA_RADIUS)] = 10.0;
-        tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)] = 10.0;
-        let before_dr = tracker.p[(DELTA_RADIUS, DELTA_RADIUS)];
-        let before_h = tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)];
+        tracker.p_mut()[(DELTA_RADIUS, DELTA_RADIUS)] = 10.0;
+        tracker.p_mut()[(HEIGHT_DIFF, HEIGHT_DIFF)] = 10.0;
+        let before_dr = tracker.p()[(DELTA_RADIUS, DELTA_RADIUS)];
+        let before_h = tracker.p()[(HEIGHT_DIFF, HEIGHT_DIFF)];
         let mismatched = [
             observation(na::Point3::new(1_000.0, 0.0, 260.0), 0.0, 320.0),
             observation(
@@ -1267,8 +1295,8 @@ ypd_geometry_recovery_min_h_variance = 0.000625
         tracker.note_observation_jump(true, &cfg);
         tracker.update_batch(&mismatched, Some(0), &cfg);
 
-        assert!(tracker.p[(DELTA_RADIUS, DELTA_RADIUS)] > before_dr);
-        assert!(tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)] > before_h);
+        assert!(tracker.p()[(DELTA_RADIUS, DELTA_RADIUS)] > before_dr);
+        assert!(tracker.p()[(HEIGHT_DIFF, HEIGHT_DIFF)] > before_h);
     }
 
     #[test]
@@ -1305,20 +1333,20 @@ ypd_geometry_recovery_min_h_variance = 0.000625
 
         assert_eq!(tracker.outpost_height_phase, Some(phase));
         assert_eq!(
-            tracker.x[DELTA_RADIUS],
+            tracker.x()[DELTA_RADIUS],
             outpost_height_offset_from_phase(phase, 1).unwrap()
         );
         assert_eq!(
-            tracker.x[HEIGHT_DIFF],
+            tracker.x()[HEIGHT_DIFF],
             outpost_height_offset_from_phase(phase, 2).unwrap()
         );
         assert_eq!(
-            tracker.p[(DELTA_RADIUS, DELTA_RADIUS)],
+            tracker.p()[(DELTA_RADIUS, DELTA_RADIUS)],
             OUTPOST_LOCKED_HEIGHT_VARIANCE_MM2
         );
 
-        let h_id1 = tracker.measurement_jacobian(&tracker.x, 1);
-        let h_id2 = tracker.measurement_jacobian(&tracker.x, 2);
+        let h_id1 = tracker.measurement_jacobian(tracker.x(), 1);
+        let h_id2 = tracker.measurement_jacobian(tracker.x(), 2);
         assert_eq!(h_id1[(2, DELTA_RADIUS)], 0.0);
         assert_eq!(h_id2[(2, HEIGHT_DIFF)], 0.0);
     }

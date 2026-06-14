@@ -1197,7 +1197,14 @@ pub fn energy_mechanism_estimate_process(
 ) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_millis(2));
-        let mut tracker = EnergyMechanismTracker::new(EnergyMechanismMode::Small);
+        let tracker_cfg = GENERIC_RBT_CFG
+            .read()
+            .unwrap()
+            .energy_mechanism_cfg
+            .tracker
+            .clone();
+        let mut tracker =
+            EnergyMechanismTracker::from_tracker_cfg(EnergyMechanismMode::Small, &tracker_cfg);
         let mut snapshot_seq = 0_u64;
         let mut last_transition_seq = runtime_router.state().transition_seq;
         loop {
@@ -1321,7 +1328,10 @@ pub fn control_loop_250hz(
                 return;
             }
         };
-        let mut energy_mechanism_control = EnergyMechanismController::new();
+        let mut energy_mechanism_control = EnergyMechanismController::from_aimer_cfg(
+            &cfg.energy_mechanism_cfg.aimer,
+            &cfg.energy_mechanism_cfg.mpc,
+        );
         let mut latest_snapshot: Option<PlannerTrackSnapshot> = None;
         let mut latest_energy_snapshot: Option<EnergyMechanismTrackPacket> = None;
         let mut latest_feedback: Option<(SensData, Instant)> = None;
