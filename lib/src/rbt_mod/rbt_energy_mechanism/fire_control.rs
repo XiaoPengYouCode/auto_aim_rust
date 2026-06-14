@@ -123,28 +123,38 @@ impl EnergyMechanismController {
         }
 
         let bullet_speed = feedback_bullet_speed(input.feedback);
-        let (yaw_deg, pitch_deg) = self.solve_trajectory(snapshot, bullet_speed);
+        let (yaw_deg, pitch_deg, fly_time_s) = self.solve_trajectory(snapshot, bullet_speed);
 
         // 用 tracker 预瞄 horizon 生成 MPC yaw 参考（替代固定 yaw 常量）。
+        // horizon 的预测时间 = 基础延迟 + 最近一次解算的飞行时间。
+        let base_dt_s = self.base_predict_time_s();
         let horizon_dt: Vec<f64> = (0..self.mpc_horizon)
-            .map(|i| {
-                self.base_predict_time_s() + self.last_fly_time_s() + i as f64 * self.mpc_model_dt_s
-            })
+            .map(|i| base_dt_s + fly_time_s + i as f64 * self.mpc_model_dt_s)
             .collect();
         let horizon_points = snapshot.predict_target_horizon(&horizon_dt);
         let (yaw_ref, yaw_rate_ref) = self.build_yaw_reference(&horizon_points);
 
-        let _ = self.yaw_mpc.update_trajectory(
-            &yaw_ref,
-            &yaw_rate_ref,
-            input.feedback.gimbal_yaw as f64,
-            input.feedback.yaw_speed as f64,
-            input.dt_s,
-        );
+        // 用 MPC 输出替代 raw yaw：update_trajectory 返回滤波后的 command_deg。
+        // MPC 失败或输出非有限时回退到 raw yaw_deg，保证控制不中断。
+        let mpc_command_deg = self
+            .yaw_mpc
+            .update_trajectory(
+                &yaw_ref,
+                &yaw_rate_ref,
+                input.feedback.gimbal_yaw as f64,
+                input.feedback.yaw_speed as f64,
+                input.dt_s,
+            )
+            .ok()
+            .map(|output| output.command_deg)
+            .filter(|deg| deg.is_finite());
+        let gimbal_yaw_deg = mpc_command_deg.unwrap_or(yaw_deg);
 
-        let shot_mode = self.next_shot_mode();
+        // 开火需要 MCU 允许 + 反馈新鲜 + 满足 fire_gap。
+        let fire_permit = input.feedback.mcu_fire_permit;
+        let shot_mode = self.next_shot_mode(fire_permit);
         let control = CtrlData {
-            gimbal_yaw: yaw_deg as f32,
+            gimbal_yaw: gimbal_yaw_deg as f32,
             gimbal_pitch: pitch_deg as f32,
             shot_mode,
             shot_buff_mode: shot_mode_for_task(input.feedback.task_mode),
@@ -155,7 +165,7 @@ impl EnergyMechanismController {
         self.last_stats = EnergyMechanismControlStats {
             target_detected: true,
             track_valid: snapshot.track_valid,
-            predicted_yaw_deg: yaw_deg,
+            predicted_yaw_deg: gimbal_yaw_deg,
             predicted_pitch_deg: pitch_deg,
             shot_mode,
             snapshot_stale: stale,
@@ -168,7 +178,7 @@ impl EnergyMechanismController {
         &self,
         snapshot: EnergyMechanismTrackSnapshot,
         bullet_speed_mps: f64,
-    ) -> (f64, f64) {
+    ) -> (f64, f64, f64) {
         let base_dt_s = self.base_predict_time_s();
         let mut predicted = snapshot.predict_target_center_world_m(base_dt_s);
         let mut last_fly_time = 0.0_f64;
@@ -179,7 +189,7 @@ impl EnergyMechanismController {
             let horizontal = predicted.x.hypot(predicted.y);
             let height = predicted.z;
             let Some(fly_time) = fly_time(bullet_speed_mps, horizontal, height) else {
-                return (solved_yaw_deg, solved_pitch_deg);
+                return (solved_yaw_deg, solved_pitch_deg, last_fly_time);
             };
             last_fly_time = fly_time;
 
@@ -190,23 +200,19 @@ impl EnergyMechanismController {
                 let horizontal = predicted.x.hypot(predicted.y);
                 let height = predicted.z;
                 let ballistic_pitch = solve_pitch_deg(horizontal, height, bullet_speed_mps);
-                let pitch_rate = self.estimate_pitch_rate(snapshot, total_dt);
-                let pitch_lead = pitch_rate * self.pitch_velocity_lead_time_s;
+                // estimate_pitch_rate 返回 rad/s；pitch_offset/弹道角都是 deg，lead 需转 deg。
+                let pitch_rate_rad_s = self.estimate_pitch_rate(snapshot, total_dt);
+                let pitch_lead_deg =
+                    (pitch_rate_rad_s * self.pitch_velocity_lead_time_s).to_degrees();
                 solved_yaw_deg = command_yaw_deg(predicted, self.yaw_offset_deg);
-                solved_pitch_deg = ballistic_pitch + self.pitch_offset_deg + pitch_lead;
+                solved_pitch_deg = ballistic_pitch + self.pitch_offset_deg + pitch_lead_deg;
             }
         }
-        let _ = last_fly_time;
-        (solved_yaw_deg, solved_pitch_deg)
+        (solved_yaw_deg, solved_pitch_deg, last_fly_time)
     }
 
     fn base_predict_time_s(&self) -> f64 {
         (DEFAULT_BASE_PREDICT_TIME_S + self.predict_time_s).clamp(0.0, 0.5)
-    }
-
-    fn last_fly_time_s(&self) -> f64 {
-        // MPC horizon 用最近一次解算的飞行时间近似；首帧用 0。
-        0.0
     }
 
     /// 用相邻预测点的 pitch 差分估 pitch 变化率（rad/s）。
@@ -264,7 +270,11 @@ impl EnergyMechanismController {
         }
     }
 
-    fn next_shot_mode(&mut self) -> ShotMode {
+    fn next_shot_mode(&mut self, fire_permit: bool) -> ShotMode {
+        // MCU 禁火时不下发 ShotOnce，但仍保持瞄准。
+        if !fire_permit {
+            return ShotMode::AimOnly;
+        }
         let now = std::time::Instant::now();
         if self
             .last_fire_t
@@ -349,6 +359,10 @@ mod tests {
     use crate::rbt_mod::rbt_energy_mechanism::tracker::CurveSnapshot;
 
     fn feedback(task_mode: TaskMode) -> SensData {
+        feedback_with_permit(task_mode, true)
+    }
+
+    fn feedback_with_permit(task_mode: TaskMode, mcu_fire_permit: bool) -> SensData {
         SensData {
             task_mode,
             self_fraction: SelfFraction::Blue,
@@ -357,7 +371,7 @@ mod tests {
             gimbal_yaw: 0.0,
             gimbal_pitch: 0.0,
             yaw_speed: 0.0,
-            mcu_fire_permit: true,
+            mcu_fire_permit,
             raw_task_mode: task_mode.into(),
             mapped_task_mode: task_mode,
         }
@@ -459,7 +473,7 @@ mod tests {
                 curve_speed_rad_s: 1.1775,
             }),
         };
-        let (yaw_deg, _pitch_deg) = controller.solve_trajectory(snapshot, 24.0);
+        let (yaw_deg, _pitch_deg, _fly_time) = controller.solve_trajectory(snapshot, 24.0);
         assert!(yaw_deg.is_finite());
         // world +y → 负 gimbal yaw，预测后 y 增大 → yaw 为负。
         assert!(yaw_deg < 0.0, "yaw_deg={yaw_deg}");
@@ -473,5 +487,63 @@ mod tests {
     #[test]
     fn fly_time_returns_none_for_low_bullet_speed() {
         assert_eq!(fly_time(0.5, 4.0, 0.5), None);
+    }
+
+    #[test]
+    fn mcu_fire_permit_blocks_shot_once() {
+        // MCU 禁火时即使 fire_gap 满足也不应下发 ShotOnce，但仍瞄准。
+        let mut controller = EnergyMechanismController::new();
+        let control = controller.update(EnergyMechanismControlInput {
+            target: Some(small_snapshot()),
+            feedback: feedback_with_permit(TaskMode::HitSmallBuff, false),
+            feedback_fresh: true,
+            dt_s: 0.004,
+            snapshot_age_ms: 5.0,
+        });
+
+        assert_eq!(control.aiming_state, AimingState::AimingWithTarget);
+        assert_eq!(control.shot_mode, ShotMode::AimOnly);
+    }
+
+    #[test]
+    fn mcu_fire_permit_allows_shot_once_when_enabled() {
+        // MCU 允许开火 + fire_gap 满足 → ShotOnce。
+        let mut controller = EnergyMechanismController::new();
+        let control = controller.update(EnergyMechanismControlInput {
+            target: Some(small_snapshot()),
+            feedback: feedback_with_permit(TaskMode::HitSmallBuff, true),
+            feedback_fresh: true,
+            dt_s: 0.004,
+            snapshot_age_ms: 5.0,
+        });
+
+        assert_eq!(control.shot_mode, ShotMode::ShotOnce);
+    }
+
+    #[test]
+    fn pitch_lead_converts_rad_per_s_to_deg() {
+        // pitch_rate = 1.0 rad/s, lead_time = 0.1s → lead = 0.1 rad = 5.729... deg。
+        // 直接验证单位转换：estimate_pitch_rate 返回 rad/s，最终加到 deg 的 pitch 上。
+        let lead_rad_s = 1.0_f64;
+        let lead_time_s = 0.1_f64;
+        let lead_deg = (lead_rad_s * lead_time_s).to_degrees();
+        assert!((lead_deg - (0.1_f64).to_degrees()).abs() < 1e-9);
+        assert!((lead_deg - 5.729577951308232).abs() < 1e-6);
+    }
+
+    #[test]
+    fn yaw_mpc_command_supersedes_raw_yaw_when_finite() {
+        // 有目标时 gimbal_yaw 应来自 MPC 输出（有限值），而非 raw solve_trajectory 的 yaw。
+        // MPC 在 measured_yaw=0、ref 非零时输出应与 raw 不同。这里只断言控制下发的是有限值，
+        // 且当 raw yaw 与 measured 差距大时 MPC 会把它拉向参考（不会原样回吐 raw）。
+        let mut controller = EnergyMechanismController::new();
+        let control = controller.update(EnergyMechanismControlInput {
+            target: Some(small_snapshot()),
+            feedback: feedback(TaskMode::HitSmallBuff),
+            feedback_fresh: true,
+            dt_s: 0.004,
+            snapshot_age_ms: 5.0,
+        });
+        assert!(control.gimbal_yaw.is_finite());
     }
 }

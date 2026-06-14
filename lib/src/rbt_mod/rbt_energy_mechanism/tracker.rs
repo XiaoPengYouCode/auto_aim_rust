@@ -117,6 +117,9 @@ pub struct EnergyMechanismTracker {
     /// 大符曲线 EKF。小符时为 `None`；大符时持有并承担相位/曲线预测。
     curve_eskf: Option<BigBuffCurveEskf>,
     lost_timeout_s: f64,
+    /// 保存构造时的 tracker 配置，模式切换到 Large 时用它重建曲线 EKF，
+    /// 避免从 Small 切 Large 时丢失 rbt_cfg.toml 里的大符参数。
+    tracker_cfg: EnergyMechanismTrackerCfg,
 }
 
 impl EnergyMechanismTracker {
@@ -142,6 +145,7 @@ impl EnergyMechanismTracker {
             last_target_switched: false,
             curve_eskf: None,
             lost_timeout_s: 0.35,
+            tracker_cfg: EnergyMechanismTrackerCfg::default(),
         }
     }
 
@@ -149,6 +153,7 @@ impl EnergyMechanismTracker {
     pub fn from_tracker_cfg(mode: EnergyMechanismMode, cfg: &EnergyMechanismTrackerCfg) -> Self {
         let mut tracker = Self::new(mode);
         tracker.lost_timeout_s = cfg.lost_timeout_s.max(0.0);
+        tracker.tracker_cfg = cfg.clone();
         if mode == EnergyMechanismMode::Large {
             tracker.curve_eskf = Some(BigBuffCurveEskf::from_tracker_cfg(cfg));
         }
@@ -157,20 +162,13 @@ impl EnergyMechanismTracker {
 
     pub fn reset(&mut self, mode: EnergyMechanismMode) {
         let lost_timeout_s = self.lost_timeout_s;
+        let tracker_cfg = self.tracker_cfg.clone();
         let mut next = Self::new(mode);
         next.lost_timeout_s = lost_timeout_s;
+        next.tracker_cfg = tracker_cfg;
         if mode == EnergyMechanismMode::Large {
-            if let Some(eskf) = &self.curve_eskf {
-                next.curve_eskf = Some(eskf.clone());
-                if let Some(eskf) = &mut next.curve_eskf {
-                    eskf.reset();
-                }
-            } else {
-                // 模式切换到大符但之前没有曲线 EKF：用默认配置重建（参数丢失可接受，因为 reset 后会重新初始化）。
-                next.curve_eskf = Some(BigBuffCurveEskf::from_tracker_cfg(
-                    &EnergyMechanismTrackerCfg::default(),
-                ));
-            }
+            // 始终用保存的真实配置重建曲线 EKF，避免 Small→Large 切换时丢 rbt_cfg.toml 参数。
+            next.curve_eskf = Some(BigBuffCurveEskf::from_tracker_cfg(&next.tracker_cfg));
         }
         *self = next;
     }
@@ -566,6 +564,38 @@ mod tests {
         cfg.lost_timeout_s = 0.5;
         let tracker = EnergyMechanismTracker::from_tracker_cfg(EnergyMechanismMode::Small, &cfg);
         assert!((tracker.lost_timeout_s - 0.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn small_to_large_switch_preserves_tracker_cfg() {
+        // 生产路径：先以 Small + 自定义配置构造，再切 Large。
+        // 切换后必须用真实配置（而非 default）重建曲线 EKF。
+        let mut cfg = default_tracker_cfg();
+        cfg.big_phase_process_noise = 0.123;
+        cfg.lost_timeout_s = 0.42;
+        let mut tracker =
+            EnergyMechanismTracker::from_tracker_cfg(EnergyMechanismMode::Small, &cfg);
+        // Small 时无曲线 EKF。
+        assert!(tracker.curve_eskf.is_none());
+
+        // 切 Large：reset 后应有用真实配置重建的曲线 EKF，且 lost_timeout 保留。
+        tracker.reset(EnergyMechanismMode::Large);
+        assert!(tracker.curve_eskf.is_some());
+        assert!((tracker.lost_timeout_s - 0.42).abs() < 1e-9);
+        // tracker_cfg 应保留自定义值。
+        assert!((tracker.tracker_cfg.big_phase_process_noise - 0.123).abs() < 1e-9);
+    }
+
+    #[test]
+    fn large_to_small_then_back_to_large_keeps_cfg() {
+        let mut cfg = default_tracker_cfg();
+        cfg.big_a_process_noise = 0.007;
+        let mut tracker =
+            EnergyMechanismTracker::from_tracker_cfg(EnergyMechanismMode::Large, &cfg);
+        tracker.reset(EnergyMechanismMode::Small);
+        tracker.reset(EnergyMechanismMode::Large);
+        assert!(tracker.curve_eskf.is_some());
+        assert!((tracker.tracker_cfg.big_a_process_noise - 0.007).abs() < 1e-9);
     }
 
     #[test]

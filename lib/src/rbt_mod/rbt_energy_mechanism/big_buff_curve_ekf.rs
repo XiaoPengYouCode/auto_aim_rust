@@ -126,6 +126,21 @@ fn normalize_angle(angle: f64) -> f64 {
     normalized - std::f64::consts::PI
 }
 
+/// 把 `angle` 加上若干个 2π，使其与 `reference` 的差落在 (-π, π] 内。
+/// 用于速度窗口回归前展开跨 ±π 的 roll 角，避免正常旋转被当成大跳变。
+fn unwrap_relative_to(angle: f64, reference: f64) -> f64 {
+    if !angle.is_finite() || !reference.is_finite() {
+        return angle;
+    }
+    let mut delta = (angle - reference) % std::f64::consts::TAU;
+    if delta < -std::f64::consts::PI {
+        delta += std::f64::consts::TAU;
+    } else if delta > std::f64::consts::PI {
+        delta -= std::f64::consts::TAU;
+    }
+    reference + delta
+}
+
 impl BigBuffCurveEskf {
     /// 用默认曲线初值构造（`a = 0.9125`、`w = 1.942`、`phase = 0`）。
     pub fn from_tracker_cfg(cfg: &EnergyMechanismTrackerCfg) -> Self {
@@ -195,16 +210,15 @@ impl BigBuffCurveEskf {
         estimate_linear_rate_from_history(&self.history, self.cfg.window_samples, self.cfg.window_s)
     }
 
-    /// 执行一步 predict：按方向把相位推进 `dt`，并传播协方差。
+    /// 执行一步 predict：把曲线相位 φ 推进 `dt`，并传播协方差。
+    ///
+    /// 注意：phase（曲线内部相位 φ）的推进由 `w` 决定，**不带方向系数**——方向只影响
+    /// roll（外层目标角度）的累积，phase 是驱动 speed = a·sin(φ)+(base-a) 的内部状态。
+    /// 这与 vivsionn `BuffTracker::update_ekf` 的 f lambda 一致（phase += w·dt，roll 才带 dir）。
     pub fn predict(&mut self, dt: f64) {
         let dt = dt.clamp(1e-3, 0.1);
-        let active_dir = if self.direction != 0 {
-            self.direction as f64
-        } else {
-            1.0
-        };
 
-        // 名义状态非线性传播：phase += w·dt，a/w 不变；speed 由曲线公式即时计算。
+        // 名义状态非线性传播：phase += w·dt，a/w 不变。
         let state_step = |x: &na::DVector<f64>| {
             let phase = if x[PHASE].is_finite() { x[PHASE] } else { 0.0 };
             let w = clamp_curve_w(x[W]);
@@ -215,17 +229,10 @@ impl BigBuffCurveEskf {
             next
         };
 
-        // 状态转移雅可比 F：phase 对自身/w，a/w 对自身。
+        // 状态转移雅可比 F。phase 对 w 的偏导 dφ/dw = dt（vivsionn F(9,8)=dt），
+        // 必须保留这个耦合，否则速度测量更新对 w 的修正无法在 predict 中保持，w 学不动。
         let mut f = na::DMatrix::<f64>::identity(STATE_DIM, STATE_DIM);
-        let phase = if self.ekf.x[PHASE].is_finite() {
-            self.ekf.x[PHASE]
-        } else {
-            0.0
-        };
-        let w = clamp_curve_w(self.ekf.x[W]);
-        f[(PHASE, W)] = dt * active_dir.signum().abs() * 0.0; // phase 推进由 state_step 承担
-        let _ = (phase, w); // F 对 phase 的线性项已并入 state_step；这里保持单位阵 + Q
-        let _ = active_dir;
+        f[(PHASE, W)] = dt;
 
         let q = self.process_noise(dt);
         self.ekf.predict_nonlinear(&f, &q, state_step);
@@ -469,8 +476,17 @@ fn estimate_linear_rate_from_history(
         return None;
     }
 
+    // 样本是倒序收集的（times[0] 最新）。roll 经 normalize_angle 后落在 (-π, π]，
+    // 跨越 ±π 时（如 3.1 → -3.1）会被线性回归当成大跳变，估出错误速度。
+    // 以最新样本 angles[0] 为基准逐个 unwrap，保证窗口内角度连续。
+    let mut unwrapped = [0.0_f64; 16];
+    unwrapped[0] = angles[0];
+    for i in 1..count {
+        unwrapped[i] = unwrap_relative_to(angles[i], unwrapped[i - 1]);
+    }
+
     let mean_t: f64 = times[..count].iter().sum();
-    let mean_a: f64 = angles[..count].iter().sum();
+    let mean_a: f64 = unwrapped[..count].iter().sum();
     let mean_t = mean_t / count as f64;
     let mean_a = mean_a / count as f64;
 
@@ -478,7 +494,7 @@ fn estimate_linear_rate_from_history(
     let mut denominator = 0.0;
     for i in 0..count {
         let dt = times[i] - mean_t;
-        numerator += dt * (angles[i] - mean_a);
+        numerator += dt * (unwrapped[i] - mean_a);
         denominator += dt * dt;
     }
     if !numerator.is_finite() || !denominator.is_finite() || denominator < 1e-6 {
@@ -599,6 +615,44 @@ mod tests {
         }
         let speed = eskf.estimate_observed_speed().unwrap();
         assert!((speed - 2.0).abs() < 1e-6, "speed={speed}");
+    }
+
+    #[test]
+    fn estimate_observed_speed_unwraps_roll_across_pi_boundary() {
+        // roll 以 3.0 rad/s 递增，跨越 ±π 边界。若不 unwrap，回归会把
+        // π → -π 的跳变当成速度反转，估出错误值。
+        let mut eskf = BigBuffCurveEskf::from_tracker_cfg(&default_cfg());
+        let rate = 3.0;
+        for i in 0..20 {
+            let t = i as f64 * 0.02;
+            // record_roll 内部存原始角度，但 normalize 在 tracker 侧；
+            // 这里直接喂 normalize 后的角度模拟实车 tracker 输出。
+            let raw = rate * t;
+            let normalized =
+                ((raw + std::f64::consts::PI) % std::f64::consts::TAU) - std::f64::consts::PI;
+            eskf.record_roll(t, normalized);
+        }
+        let speed = eskf
+            .estimate_observed_speed()
+            .expect("speed estimate present");
+        // unwrap 后应接近真实 rate，而不是被边界跳变污染。
+        assert!((speed - rate).abs() < 0.1, "speed={speed} expected~{rate}");
+    }
+
+    #[test]
+    fn unwrap_relative_to_handles_pi_boundary() {
+        use super::unwrap_relative_to;
+        // -3.13 相对 3.13：差值跨过 -π，应展开为 3.13 附近（≈ 3.153，差 0.023）。
+        let r1 = unwrap_relative_to(-3.13, 3.13);
+        assert!((r1 - 3.13).abs() < 0.05, "r1={r1}");
+        // 3.13 相对 -3.13：差值跨过 +π，应展开为 -3.13 附近（≈ -3.153）。
+        let r2 = unwrap_relative_to(3.13, -3.13);
+        assert!((r2 - (-3.13)).abs() < 0.05, "r2={r2}");
+        // 不跨边界时基本不变。
+        assert!((unwrap_relative_to(1.0, 0.5) - 1.0).abs() < 1e-9);
+        // 关键性质：跨 ±π 后两个样本的差应等于它们的连续角差，而非 2π 跳变。
+        let diff = unwrap_relative_to(-3.13, 3.13) - 3.13;
+        assert!(diff.abs() < 0.05, "跨边界差应为小量，实际 diff={diff}");
     }
 
     #[test]
