@@ -1,5 +1,7 @@
 use std::collections::VecDeque;
 
+use crate::rbt_infra::rbt_cfg::EstimatorCfg;
+
 const STATE_DIM: usize = 11;
 const PRIMARY_RADIUS: usize = 8;
 const DELTA_RADIUS: usize = 9;
@@ -10,6 +12,7 @@ const OUTPOST_RADIUS_MM: f64 = 276.5;
 const OUTPOST_MAX_HEIGHT_OFFSET_MM: f64 = 600.0;
 const MOTION_HISTORY_CAPACITY: usize = 128;
 const NIS_WINDOW_SIZE: usize = 100;
+const M2_TO_MM2: f64 = 1_000_000.0;
 
 #[derive(Debug, Clone, Copy)]
 pub struct YpdObservation {
@@ -42,6 +45,12 @@ struct MotionSample {
     center_x: f64,
     center_y: f64,
     yaw_rate: f64,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct GeometryRecoverySample {
+    xy_residual_mm: f64,
+    z_residual_mm: f64,
 }
 
 struct ArmorAssignmentSearch<'a> {
@@ -110,6 +119,9 @@ pub struct YpdAngleTracker {
     recent_nis_failures: VecDeque<bool>,
     last_batch_match_ids: Vec<isize>,
     motion_history: VecDeque<MotionSample>,
+    geometry_recovery_window_remaining: usize,
+    geometry_recovery_cooldown_remaining: usize,
+    geometry_mismatch_streak: usize,
 }
 
 impl YpdAngleTracker {
@@ -128,6 +140,9 @@ impl YpdAngleTracker {
             recent_nis_failures: VecDeque::from([false]),
             last_batch_match_ids: Vec::new(),
             motion_history: VecDeque::new(),
+            geometry_recovery_window_remaining: 0,
+            geometry_recovery_cooldown_remaining: 0,
+            geometry_mismatch_streak: 0,
         };
         tracker.reset();
         tracker
@@ -148,6 +163,9 @@ impl YpdAngleTracker {
         self.recent_nis_failures.push_back(false);
         self.last_batch_match_ids.clear();
         self.motion_history.clear();
+        self.geometry_recovery_window_remaining = 0;
+        self.geometry_recovery_cooldown_remaining = 0;
+        self.geometry_mismatch_streak = 0;
     }
 
     pub fn init(&mut self, observation: &YpdObservation, armor_num: usize) {
@@ -224,10 +242,20 @@ impl YpdAngleTracker {
         self.p = symmetrize(f * self.p * f.transpose() + self.process_noise(dt));
     }
 
+    pub fn note_observation_jump(&mut self, jumped: bool, cfg: &EstimatorCfg) {
+        if jumped && self.initialized && self.armor_num == 4 {
+            self.geometry_recovery_window_remaining =
+                cfg.ypd_geometry_recovery_window_frames.max(1);
+        } else if !jumped && self.geometry_recovery_window_remaining == 0 {
+            self.geometry_mismatch_streak = 0;
+        }
+    }
+
     pub fn update_batch(
         &mut self,
         observations: &[YpdObservation],
         preferred_index: Option<usize>,
+        cfg: &EstimatorCfg,
     ) {
         self.last_batch_match_ids.clear();
         if !self.initialized || observations.is_empty() {
@@ -239,10 +267,15 @@ impl YpdAngleTracker {
         let assignment = self.assign_armor_ids(&observations[..limit]);
         let tracked_index = preferred_index.filter(|index| *index < limit).unwrap_or(0);
         let mut primary_match = None;
+        let mut recovery_samples = Vec::new();
 
         for index in 0..limit {
             let matched_id = assignment[index]
                 .unwrap_or_else(|| self.select_best_armor_id(&observations[index]));
+            if self.geometry_recovery_window_remaining > 0 && self.armor_num == 4 {
+                recovery_samples
+                    .push(self.geometry_recovery_sample(&observations[index], matched_id));
+            }
             if self.correct_with_observation(&observations[index], matched_id) {
                 self.last_batch_match_ids[index] = matched_id as isize;
                 if index == tracked_index {
@@ -254,6 +287,7 @@ impl YpdAngleTracker {
         if let Some(matched_id) = primary_match {
             self.tracked_id = matched_id;
         }
+        self.update_geometry_recovery(&recovery_samples, cfg);
         self.clamp_geometry();
         self.append_motion_sample();
     }
@@ -493,6 +527,90 @@ impl YpdAngleTracker {
         self.record_nis(prior_nis);
         self.update_count += 1;
         true
+    }
+
+    fn geometry_recovery_sample(
+        &self,
+        observation: &YpdObservation,
+        id: usize,
+    ) -> GeometryRecoverySample {
+        let predicted = self.predicted_armor_position(&self.x, id.min(self.armor_num - 1));
+        let residual = observation.position_mm - predicted;
+        GeometryRecoverySample {
+            xy_residual_mm: residual.x.hypot(residual.y),
+            z_residual_mm: residual.z.abs(),
+        }
+    }
+
+    fn update_geometry_recovery(&mut self, samples: &[GeometryRecoverySample], cfg: &EstimatorCfg) {
+        if self.geometry_recovery_cooldown_remaining > 0 {
+            self.geometry_recovery_cooldown_remaining -= 1;
+        }
+        if self.geometry_recovery_window_remaining == 0 || self.armor_num != 4 {
+            return;
+        }
+        self.geometry_recovery_window_remaining -= 1;
+        if samples.len() < cfg.ypd_geometry_recovery_min_matched_count.max(1) {
+            self.geometry_mismatch_streak = 0;
+            return;
+        }
+
+        let mean_xy = samples
+            .iter()
+            .map(|sample| sample.xy_residual_mm)
+            .sum::<f64>()
+            / samples.len() as f64;
+        let mean_z = samples
+            .iter()
+            .map(|sample| sample.z_residual_mm)
+            .sum::<f64>()
+            / samples.len() as f64;
+        let sigma_dr = self.p[(DELTA_RADIUS, DELTA_RADIUS)].max(1e-9).sqrt();
+        let sigma_h = self.p[(HEIGHT_DIFF, HEIGHT_DIFF)].max(1e-9).sqrt();
+        let xy_over_sigma_dr = mean_xy / sigma_dr;
+        let z_over_sigma_h = mean_z / sigma_h;
+        let mismatch = z_over_sigma_h.is_finite()
+            && xy_over_sigma_dr.is_finite()
+            && ((z_over_sigma_h >= cfg.ypd_geometry_recovery_z_sigma_threshold
+                && xy_over_sigma_dr >= cfg.ypd_geometry_recovery_xy_sigma_threshold)
+                || z_over_sigma_h >= cfg.ypd_geometry_recovery_z_sigma_threshold + 1.0);
+
+        if mismatch {
+            self.geometry_mismatch_streak = self.geometry_mismatch_streak.saturating_add(1);
+        } else {
+            self.geometry_mismatch_streak = 0;
+        }
+
+        if self.geometry_recovery_cooldown_remaining == 0
+            && self.geometry_mismatch_streak
+                >= cfg.ypd_geometry_recovery_mismatch_required_streak.max(1)
+        {
+            self.inflate_geometry_covariance(cfg);
+            self.geometry_mismatch_streak = 0;
+            self.geometry_recovery_cooldown_remaining =
+                cfg.ypd_geometry_recovery_cooldown_frames.max(1);
+            self.geometry_recovery_window_remaining = 0;
+        }
+    }
+
+    fn inflate_geometry_covariance(&mut self, cfg: &EstimatorCfg) {
+        let scale = cfg
+            .ypd_geometry_recovery_cov_inflation_scale
+            .clamp(1.0, 1_000.0);
+        let min_dr_var_mm2 = cfg.ypd_geometry_recovery_min_dr_variance.max(0.0) * M2_TO_MM2;
+        let min_h_var_mm2 = cfg.ypd_geometry_recovery_min_h_variance.max(0.0) * M2_TO_MM2;
+
+        for index in [DELTA_RADIUS, HEIGHT_DIFF] {
+            for col in 0..STATE_DIM {
+                self.p[(index, col)] *= scale.sqrt();
+                self.p[(col, index)] = self.p[(index, col)];
+            }
+        }
+        self.p[(DELTA_RADIUS, DELTA_RADIUS)] =
+            (self.p[(DELTA_RADIUS, DELTA_RADIUS)] * scale).max(min_dr_var_mm2);
+        self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] =
+            (self.p[(HEIGHT_DIFF, HEIGHT_DIFF)] * scale).max(min_h_var_mm2);
+        self.p = symmetrize(self.p);
     }
 
     fn assign_armor_ids(&self, observations: &[YpdObservation]) -> Vec<Option<usize>> {
@@ -741,6 +859,25 @@ fn quadratic_accel(samples: impl Iterator<Item = (f64, f64)>) -> f64 {
 mod tests {
     use super::*;
 
+    fn estimator_cfg() -> EstimatorCfg {
+        toml::from_str(
+            "\
+armor_lost_wait_duration_ms = 100
+enemy_lost_wait_duration_ms = 1000
+ypd_geometry_recovery_window_frames = 24
+ypd_geometry_recovery_cooldown_frames = 12
+ypd_geometry_recovery_mismatch_required_streak = 2
+ypd_geometry_recovery_min_matched_count = 2
+ypd_geometry_recovery_z_sigma_threshold = 3.0
+ypd_geometry_recovery_xy_sigma_threshold = 2.0
+ypd_geometry_recovery_cov_inflation_scale = 48.0
+ypd_geometry_recovery_min_dr_variance = 0.0025
+ypd_geometry_recovery_min_h_variance = 0.000625
+",
+        )
+        .unwrap()
+    }
+
     fn observation(center: na::Point3<f64>, yaw: f64, radius: f64) -> YpdObservation {
         let position = na::Point3::new(
             center.x - radius * yaw.cos(),
@@ -766,7 +903,7 @@ mod tests {
             observation(center, 0.0, 200.0),
             observation(center, std::f64::consts::FRAC_PI_2, 200.0),
         ];
-        tracker.update_batch(&observations, Some(0));
+        tracker.update_batch(&observations, Some(0), &estimator_cfg());
 
         assert_eq!(tracker.last_batch_match_ids().len(), 2);
         assert_ne!(
@@ -788,5 +925,33 @@ mod tests {
 
         assert!((snapshot.state11d[0] - 1_005.0).abs() < 1e-6);
         assert!((snapshot.state11d[6] - 0.05).abs() < 1e-6);
+    }
+
+    #[test]
+    fn geometry_recovery_inflates_dr_and_height_covariance_after_mismatch() {
+        let cfg = estimator_cfg();
+        let center = na::Point3::new(1_000.0, 0.0, 100.0);
+        let mut tracker = YpdAngleTracker::new();
+        tracker.init(&observation(center, 0.0, 200.0), 4);
+        tracker.p[(DELTA_RADIUS, DELTA_RADIUS)] = 10.0;
+        tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)] = 10.0;
+        let before_dr = tracker.p[(DELTA_RADIUS, DELTA_RADIUS)];
+        let before_h = tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)];
+        let mismatched = [
+            observation(na::Point3::new(1_000.0, 0.0, 260.0), 0.0, 320.0),
+            observation(
+                na::Point3::new(1_000.0, 0.0, 260.0),
+                std::f64::consts::FRAC_PI_2,
+                320.0,
+            ),
+        ];
+
+        tracker.note_observation_jump(true, &cfg);
+        tracker.update_batch(&mismatched, Some(0), &cfg);
+        tracker.note_observation_jump(true, &cfg);
+        tracker.update_batch(&mismatched, Some(0), &cfg);
+
+        assert!(tracker.p[(DELTA_RADIUS, DELTA_RADIUS)] > before_dr);
+        assert!(tracker.p[(HEIGHT_DIFF, HEIGHT_DIFF)] > before_h);
     }
 }
