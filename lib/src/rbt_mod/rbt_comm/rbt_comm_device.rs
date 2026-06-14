@@ -85,8 +85,6 @@ pub mod rbt_can {
     #[cfg(target_os = "linux")]
     impl SocketCanDevice {
         pub fn open(interface: &str) -> RbtResult<Self> {
-            use socketcan::Socket;
-
             let socket = socketcan::tokio::CanSocket::open(interface).map_err(RbtError::from)?;
             Ok(Self { socket })
         }
