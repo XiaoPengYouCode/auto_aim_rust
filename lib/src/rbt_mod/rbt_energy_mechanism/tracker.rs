@@ -7,6 +7,10 @@ const HISTORY_CAPACITY: usize = 48;
 const LOST_TIMEOUT_S: f64 = 0.35;
 const LARGE_CURVE_A: f64 = 0.78;
 const LARGE_CURVE_W: f64 = 1.884;
+const TARGET_SWITCH_SEGMENT_RAD: f64 = std::f64::consts::TAU / 5.0 * 0.45;
+const TARGET_REACQUIRE_ROLL_GATE_RAD: f64 = 0.12;
+const TARGET_REACQUIRE_DISTANCE_GATE_M: f64 = 0.45;
+const TARGET_SWITCH_CONFIRM_FRAMES: usize = 2;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EnergyMechanismTrackSnapshot {
@@ -20,6 +24,10 @@ pub struct EnergyMechanismTrackSnapshot {
     pub lost: bool,
     pub track_valid: bool,
     pub state_age_s: f64,
+    pub switch_deferred: bool,
+    pub target_switched: bool,
+    pub selected_phase_index: Option<usize>,
+    pub selected_roll_offset_rad: Option<f64>,
 }
 
 impl EnergyMechanismTrackSnapshot {
@@ -64,6 +72,12 @@ pub struct EnergyMechanismTracker {
     filtered_roll_rate_rad_s: f64,
     direction: i32,
     history: VecDeque<RollSample>,
+    selected_phase_index: Option<usize>,
+    selected_roll_offset_rad: Option<f64>,
+    pending_switch_phase_index: Option<usize>,
+    pending_switch_streak: usize,
+    last_switch_deferred: bool,
+    last_target_switched: bool,
 }
 
 impl EnergyMechanismTracker {
@@ -80,6 +94,12 @@ impl EnergyMechanismTracker {
             filtered_roll_rate_rad_s: 0.0,
             direction: 0,
             history: VecDeque::new(),
+            selected_phase_index: None,
+            selected_roll_offset_rad: None,
+            pending_switch_phase_index: None,
+            pending_switch_streak: 0,
+            last_switch_deferred: false,
+            last_target_switched: false,
         }
     }
 
@@ -103,9 +123,20 @@ impl EnergyMechanismTracker {
             .map(|last| now.duration_since(last).as_secs_f64().clamp(0.001, 0.08))
             .unwrap_or(0.01);
         self.last_update_tp = Some(now);
+        self.last_switch_deferred = false;
+        self.last_target_switched = false;
 
         if let Some(target) = target {
-            self.correct(target, time_s, dt_s, now);
+            if self.mode == EnergyMechanismMode::Large
+                && self.should_defer_target_switch(target)
+                && self.pending_switch_streak < TARGET_SWITCH_CONFIRM_FRAMES
+            {
+                self.last_switch_deferred = true;
+            } else {
+                let reinitialize = self.mode == EnergyMechanismMode::Large
+                    && self.should_reinitialize_for_target_switch(target);
+                self.correct(target, time_s, dt_s, now, reinitialize);
+            }
         }
 
         self.snapshot(now)
@@ -131,6 +162,10 @@ impl EnergyMechanismTracker {
             lost,
             track_valid: !lost && self.history.len() >= 2,
             state_age_s,
+            switch_deferred: self.last_switch_deferred,
+            target_switched: self.last_target_switched,
+            selected_phase_index: self.selected_phase_index,
+            selected_roll_offset_rad: self.selected_roll_offset_rad,
         })
     }
 
@@ -140,12 +175,22 @@ impl EnergyMechanismTracker {
         time_s: f64,
         dt_s: f64,
         now: std::time::Instant,
+        reinitialize: bool,
     ) {
         let observed_roll = normalize_angle(target.observed_roll_rad);
-        if !self.initialized {
+        if !self.initialized || reinitialize {
+            let retained_rate = if reinitialize {
+                self.filtered_roll_rate_rad_s
+            } else {
+                0.0
+            };
+            let retained_direction = self.direction;
             self.initialized = true;
             self.filtered_roll_rad = observed_roll;
-            self.filtered_roll_rate_rad_s = 0.0;
+            self.filtered_roll_rate_rad_s = retained_rate;
+            self.direction = retained_direction;
+            self.history.clear();
+            self.last_target_switched = reinitialize;
         } else {
             let delta = normalize_angle(observed_roll - self.filtered_roll_rad);
             let raw_rate = delta / dt_s;
@@ -159,6 +204,10 @@ impl EnergyMechanismTracker {
 
         self.last_target_center_world_m = target.pose.target_center_world_m;
         self.last_rune_center_world_m = target.pose.rune_center_world_m;
+        self.selected_phase_index = Some(target.selected_phase_index);
+        self.selected_roll_offset_rad = target.selected_roll_offset_rad;
+        self.pending_switch_phase_index = None;
+        self.pending_switch_streak = 0;
         self.last_seen_tp = Some(now);
         self.history.push_back(RollSample {
             time_s,
@@ -168,6 +217,58 @@ impl EnergyMechanismTracker {
             self.history.pop_front();
         }
         self.fit_direction_from_history();
+    }
+
+    fn should_defer_target_switch(&mut self, target: &EnergyMechanismSolvedTarget) -> bool {
+        if !self.initialized {
+            return false;
+        }
+        let switching = target.switch_deferred || self.is_target_switch_candidate(target);
+        if !switching {
+            self.pending_switch_phase_index = None;
+            self.pending_switch_streak = 0;
+            return false;
+        }
+
+        if self.pending_switch_phase_index == Some(target.selected_phase_index) {
+            self.pending_switch_streak = self.pending_switch_streak.saturating_add(1);
+        } else {
+            self.pending_switch_phase_index = Some(target.selected_phase_index);
+            self.pending_switch_streak = 1;
+        }
+        true
+    }
+
+    fn should_reinitialize_for_target_switch(&self, target: &EnergyMechanismSolvedTarget) -> bool {
+        self.initialized
+            && (target.target_switched
+                || self.pending_switch_streak >= TARGET_SWITCH_CONFIRM_FRAMES
+                || self.is_target_switch_candidate(target))
+    }
+
+    fn is_target_switch_candidate(&self, target: &EnergyMechanismSolvedTarget) -> bool {
+        if !self.initialized {
+            return false;
+        }
+        if self
+            .selected_phase_index
+            .is_some_and(|phase| phase != target.selected_phase_index)
+        {
+            return true;
+        }
+        let roll_jump = normalize_angle(target.observed_roll_rad - self.filtered_roll_rad).abs();
+        let target_jump =
+            (target.pose.target_center_world_m - self.last_target_center_world_m).norm();
+        let offset_jump = match (
+            self.selected_roll_offset_rad,
+            target.selected_roll_offset_rad,
+        ) {
+            (Some(previous), Some(current)) => normalize_angle(current - previous).abs(),
+            _ => 0.0,
+        };
+        roll_jump > TARGET_REACQUIRE_ROLL_GATE_RAD
+            || target_jump > TARGET_REACQUIRE_DISTANCE_GATE_M
+            || offset_jump > TARGET_SWITCH_SEGMENT_RAD
     }
 
     fn fit_direction_from_history(&mut self) {
@@ -206,8 +307,16 @@ mod tests {
     use crate::rbt_mod::rbt_energy_mechanism::solved::EnergyMechanismPose;
 
     fn target(roll_rad: f64) -> EnergyMechanismSolvedTarget {
+        target_with_mode(EnergyMechanismMode::Small, roll_rad, 0)
+    }
+
+    fn target_with_mode(
+        mode: EnergyMechanismMode,
+        roll_rad: f64,
+        selected_phase_index: usize,
+    ) -> EnergyMechanismSolvedTarget {
         EnergyMechanismSolvedTarget {
-            mode: EnergyMechanismMode::Small,
+            mode,
             pose: EnergyMechanismPose {
                 rune_center_world_m: na::Point3::origin(),
                 target_center_world_m: na::Point3::new(1.0, roll_rad.cos(), roll_rad.sin()),
@@ -221,9 +330,15 @@ mod tests {
                 (320.0 + 100.0 * roll_rad.cos()) as f32,
                 (320.0 + 100.0 * roll_rad.sin()) as f32,
             ),
+            image_r_center_corrected: false,
             confidence: 0.9,
-            selected_phase_index: 0,
+            selected_phase_index,
             observed_roll_rad: roll_rad,
+            switch_deferred: false,
+            target_switched: false,
+            selected_roll_offset_rad: Some(normalize_angle(
+                roll_rad - selected_phase_index as f64 * std::f64::consts::TAU / 5.0,
+            )),
         }
     }
 
@@ -249,5 +364,47 @@ mod tests {
         let snapshot = tracker.update(EnergyMechanismMode::Large, None);
 
         assert!(snapshot.is_none());
+    }
+
+    #[test]
+    fn large_tracker_defers_then_rebinds_confirmed_target_switch() {
+        let mut tracker = EnergyMechanismTracker::new(EnergyMechanismMode::Large);
+        tracker.update(
+            EnergyMechanismMode::Large,
+            Some(&target_with_mode(EnergyMechanismMode::Large, 0.0, 0)),
+        );
+        tracker.update(
+            EnergyMechanismMode::Large,
+            Some(&target_with_mode(EnergyMechanismMode::Large, 0.05, 0)),
+        );
+
+        let first_switch = tracker
+            .update(
+                EnergyMechanismMode::Large,
+                Some(&target_with_mode(
+                    EnergyMechanismMode::Large,
+                    std::f64::consts::TAU / 5.0,
+                    1,
+                )),
+            )
+            .unwrap();
+        assert!(first_switch.switch_deferred);
+        assert!(!first_switch.target_switched);
+        assert_eq!(first_switch.selected_phase_index, Some(0));
+
+        let confirmed_switch = tracker
+            .update(
+                EnergyMechanismMode::Large,
+                Some(&target_with_mode(
+                    EnergyMechanismMode::Large,
+                    std::f64::consts::TAU / 5.0,
+                    1,
+                )),
+            )
+            .unwrap();
+
+        assert!(!confirmed_switch.switch_deferred);
+        assert!(confirmed_switch.target_switched);
+        assert_eq!(confirmed_switch.selected_phase_index, Some(1));
     }
 }
