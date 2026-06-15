@@ -41,6 +41,42 @@ engine_path = "./model/engine_mechanism"
 confidence_threshold = 0.8
 nms_iou_threshold = 0.4
 
+# 能量机关 tracker / aimer / mpc 配置。检测参数继续放在上面的 detector_cfg.energy_mechanism。
+[energy_mechanism_cfg.tracker]
+lost_timeout_s = 0.35
+big_lost_timeout_s = 0.08
+big_model_reset_timeout_s = 0.35
+big_curve_ekf_fit_enabled = true
+big_phase_process_noise = 0.02
+big_a_process_noise = 1e-6
+big_w_process_noise = 3e-6
+big_measurement_noise_scale = 4.0
+big_speed_measurement_enabled = true
+big_speed_measurement_noise = 1.50
+big_speed_measurement_gate = 1.2
+big_curve_speed_slew_limit = 3.0
+big_speed_measurement_window_samples = 16
+big_speed_measurement_window_s = 0.30
+big_speed_measurement_min_history = 20
+big_curve_phi_correction_limit = 0.0
+big_phi_seed_frames = 15
+
+[energy_mechanism_cfg.aimer]
+predict_time_s = 0.0
+fire_gap_s = 0.2
+yaw_offset_deg = 0.0
+pitch_offset_deg = 0.0
+pitch_velocity_lead_time_s = 0.0
+snapshot_stale_ms = 180.0
+
+[energy_mechanism_cfg.mpc]
+model_dt_s = 0.004
+horizon = 50
+track_q = 3198.0
+rate_q = 0.0
+command_q = 1000.0
+delta_r = 48343.0
+
 [cam_cfg]
 cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]
 

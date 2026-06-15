@@ -4,11 +4,15 @@
 //! Rust-native. Protocol names such as `HitBigBuff` are handled only at the
 //! route/communication boundary.
 
+pub mod big_buff_curve_ekf;
 pub mod detected;
 pub mod fire_control;
 pub mod solved;
 pub mod tracker;
 
+pub use big_buff_curve_ekf::{
+    BIG_BUFF_BASE_SPEED, BigBuffCurveEskf, big_buff_angle_delta, big_buff_speed,
+};
 pub use detected::{
     ENERGY_MECHANISM_INPUT_HEIGHT, ENERGY_MECHANISM_INPUT_WIDTH, ENERGY_MECHANISM_KEYPOINTS,
     ENERGY_MECHANISM_OUTPUT_MAX_CHANNELS, EnergyMechanismClass, EnergyMechanismFrame,
@@ -23,4 +27,4 @@ pub use solved::{
     EnergyMechanismPose, EnergyMechanismSolvedFrame, EnergyMechanismSolvedTarget,
     solve_energy_mechanism,
 };
-pub use tracker::{EnergyMechanismTrackSnapshot, EnergyMechanismTracker};
+pub use tracker::{CurveSnapshot, EnergyMechanismTrackSnapshot, EnergyMechanismTracker};
