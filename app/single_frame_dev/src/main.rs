@@ -51,7 +51,7 @@ async fn main() -> RbtResult<()> {
         // 获取相机内参
         let cam_k = auto_aim_handle.cfg.cam_cfg.cam_k();
         // 解算检测到的所有装甲板，得到所有地方单位的解算结果
-        let enemys = enemys_solver(detector_result, &cam_k, &auto_aim_handle.rec)?;
+        let enemys = enemys_solver(detector_result, &cam_k, None, &auto_aim_handle.rec)?;
 
         // 3. 执行 estimator
         estimator_poll.update(&auto_aim_handle.cfg.estimator_cfg, enemys);
