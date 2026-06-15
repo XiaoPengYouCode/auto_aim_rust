@@ -8,7 +8,7 @@ use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
 use crate::rbt_mod::rbt_armor::solved_armor::SolvedArmor;
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
-use log::{debug, error, warn};
+use log::{debug, warn};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
@@ -91,18 +91,21 @@ pub fn enemys_solver(
 
         // 1.2 针对每一块装甲板求解pnp
         let mut enemy_solved_armors = Vec::with_capacity(detected_enemy_armors_num);
+        let pnp_solver = ArmorPnpSolver::new().ok_or(RbtError::StringError(
+            "Failed to create ArmorPnpSolver Instant".to_string(),
+        ))?;
         for armor in enemy_armors.into_iter() {
             let armor_key_points_na = armor.corner_points().map(|p| p.into());
-            let pnp_solver = ArmorPnpSolver::new().ok_or(RbtError::StringError(
-                "Failed to create ArmorPnpSolver Instant".to_string(),
-            ))?;
             if let Some(camera_pose) = pnp_solver.solve(&armor_key_points_na, cam_k) {
                 let solved_armor = SolvedArmor::new(armor, camera_pose, 0.0, 0.0, 0.0);
                 enemy_solved_armors.push(solved_armor);
             } else {
-                error!("❌ PnP solving failed!");
-                todo!("Solve失败应该后续使用ESKF纯预测进行一次更新");
+                warn!("PnP solving rejected an armor for {enemy_id:?}");
             };
+        }
+        if enemy_solved_armors.is_empty() {
+            debug!("enemys_solver: no stable PnP result for {enemy_id:?}");
+            continue;
         }
 
         // 1.3 将 pnp 结果转换为机体坐标系

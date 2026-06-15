@@ -14,7 +14,7 @@ This checklist tracks the functional gaps found while comparing this Rust worksp
 | [x] P0 能量机关 tracker/aimer | 相位 EKF、大小符曲线模型、相位化预瞄、pitch lead | 大符曲线 EKF（基于共享不定长 EKF）+ 两轮飞行时间迭代 + yaw preview horizon + pitch lead + 配置化偏置 | 大符走 `BigBuffCurveEskf` 曲线预测（`speed=a·sin(phase)+base-a`），小符保留常速；aimer 两轮弹道迭代、yaw MPC horizon 由 tracker 预瞄生成 |
 | [ ] P1 主线热更新调参 | `param.yaml` 每秒 reload，曝光/发控/MPC 可调 | 只有实验入口，主线没接 watcher | 上车调参效率会差。本轮不做热更新，配置仅启动加载 |
 | [x] P1 配置面补齐 | 大量曝光、门控、MPC、buff 参数 | `rbt_cfg.toml` 主要是 detector/cam/estimator | 新增顶层 `energy_mechanism_cfg`（tracker/aimer/mpc），补齐大符曲线 EKF 全部 knob，serde 默认值保证旧配置兼容 |
-| [ ] P1 PnP 稳态保护 | 角点细化、位姿 sanity gate | 直接网络角点 + IPPE | 建议补，降低跳点。本轮延期 |
+| [x] P1 PnP 稳态保护 | 角点细化、位姿 sanity gate | Rust IPPE 输入前做轻量角点几何规整，输出后做深度/有限值/重投影 RMSE sanity gate | 已补齐 Rust IPPE 路径的稳态保护；灰度图 subpixel 需等 solver 能拿到图像帧后再接 |
 | [ ] P1 离线录制/回放 | 可录 `.avi + .csv`，强制 task mode 回放 | 缺主链路复盘工具 | 调现场问题很关键 |
 | [ ] P1 通信/MPC smoke 工具 | `testSerial`、`can_mpc_yaw_test` 工具链完整 | `comm_test` 基本空 | 接 CAN 后应尽快补 |
 | [ ] P2 显示/HUD/录制旁路 | MJPEG/Rerun/HUD/CSV/plot 脚本多 | 有 Rerun 和日志，但观测面较薄 | 影响调试效率 |

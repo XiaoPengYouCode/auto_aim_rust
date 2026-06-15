@@ -5,6 +5,9 @@ use log::error;
 // 硬编码的世界坐标，满足 IPPE 的规范坐标系要求 (Z=0, 中心在原点)
 pub const ARMOR_LIGHT_WEIGHT: f64 = 135.0;
 pub const ARMOR_LIGHT_HEIGHT: f64 = 55.0;
+const MAX_REPROJECTION_RMSE_PX: f64 = 8.0;
+const MIN_ARMOR_DEPTH_MM: f64 = 100.0;
+const MAX_ARMOR_DEPTH_MM: f64 = 12_000.0;
 
 // 世界坐标系点，原点在装甲板中心，Z=0平面，省去归一化
 const ARMOR_WORLD_POINTS: [na::Point3<f64>; 4] = [
@@ -64,29 +67,24 @@ impl ArmorPnpSolver {
         img_coord: &[na::Point2<f64>; 4],
         cam_k: &na::Matrix3<f64>,
     ) -> Option<na::Isometry3<f64>> {
+        let refined_img_coord = refine_armor_corners(img_coord)?;
         // 使用 IPPE 算法求解出两个可能解
-        if let Some((pose1, pose2)) = self.solve_ippe(img_coord, cam_k) {
+        if let Some((pose1, pose2)) = self.solve_ippe(&refined_img_coord, cam_k) {
             // 简单判断解的合理性
-            let pose1_valid = if self.is_pose_valid(&pose1) {
-                Some(pose1)
-            } else {
-                None
-            };
-            let pose2_valid = if self.is_pose_valid(&pose2) {
-                Some(pose2)
-            } else {
-                None
-            };
+            let pose1_valid = self.valid_pose_with_reprojection(&pose1, &refined_img_coord, cam_k);
+            let pose2_valid = self.valid_pose_with_reprojection(&pose2, &refined_img_coord, cam_k);
 
             // 根据解的合理性情况返回最终解
             match (pose1_valid, pose2_valid) {
-                (Some(p1), Some(p2)) => {
-                    let err1 = self.eval_reproj_err(&p1, img_coord, cam_k);
-                    let err2 = self.eval_reproj_err(&p2, img_coord, cam_k);
-                    if err1 < err2 { Some(p1) } else { Some(p2) }
+                (Some((p1, err1)), Some((p2, err2))) => {
+                    if err1 < err2 {
+                        Some(p1)
+                    } else {
+                        Some(p2)
+                    }
                 }
-                (Some(p1), None) => Some(p1),
-                (None, Some(p2)) => Some(p2),
+                (Some((p1, _)), None) => Some(p1),
+                (None, Some((p2, _))) => Some(p2),
                 (None, None) => None,
             }
         } else {
@@ -286,11 +284,36 @@ impl ArmorPnpSolver {
         ata.try_inverse().map(|inv| inv * atb)
     }
 
-    /// 检查姿态是否有效
-    /// 逻辑较为简单，检查点是否在相机前方
+    fn valid_pose_with_reprojection(
+        &self,
+        pose: &na::Isometry3<f64>,
+        uvs: &[na::Point2<f64>; 4],
+        k: &na::Matrix3<f64>,
+    ) -> Option<(na::Isometry3<f64>, f64)> {
+        if !self.is_pose_valid(pose) {
+            return None;
+        }
+
+        let reproj_err = self.eval_reproj_err(pose, uvs, k);
+        if reproj_err.is_finite() && reproj_err <= MAX_REPROJECTION_RMSE_PX {
+            Some((*pose, reproj_err))
+        } else {
+            None
+        }
+    }
+
     fn is_pose_valid(&self, pose: &na::Isometry3<f64>) -> bool {
         // 首先检查平移向量的 Z 分量，这是一个快速的初步筛选
-        if pose.translation.vector.z <= 0.0 {
+        let t = pose.translation.vector;
+        if !t.iter().all(|value| value.is_finite())
+            || t.z <= MIN_ARMOR_DEPTH_MM
+            || t.z >= MAX_ARMOR_DEPTH_MM
+        {
+            return false;
+        }
+
+        let rot = pose.rotation.to_rotation_matrix();
+        if !rot.matrix().iter().all(|value| value.is_finite()) {
             return false;
         }
         // 确保所有点变换后都在相机前方
@@ -333,6 +356,68 @@ impl ArmorPnpSolver {
 
         (sum_sq_err / 4.0).sqrt()
     }
+}
+
+fn refine_armor_corners(corners: &[na::Point2<f64>; 4]) -> Option<[na::Point2<f64>; 4]> {
+    if corners
+        .iter()
+        .any(|point| !point.coords.iter().all(|value| value.is_finite()))
+    {
+        return None;
+    }
+
+    let mut refined = *corners;
+    let left = corners[1] - corners[0];
+    let right = corners[2] - corners[3];
+    let len_left = left.norm();
+    let len_right = right.norm();
+    if len_left <= 1e-3 || len_right <= 1e-3 {
+        return None;
+    }
+
+    let width_top = (corners[3] - corners[0]).norm();
+    let width_bottom = (corners[2] - corners[1]).norm();
+    let avg_height = 0.5 * (len_left + len_right);
+    let avg_width = 0.5 * (width_top + width_bottom);
+    if avg_width <= 1e-3 || avg_height <= 1e-3 {
+        return None;
+    }
+
+    let aspect = avg_width / avg_height;
+    if !(0.15..=8.0).contains(&aspect) {
+        return None;
+    }
+
+    let dir_left = left / len_left;
+    let dir_right = right / len_right;
+    let dot_prod = dir_left.dot(&dir_right);
+    let len_diff = (len_left - len_right).abs() / len_left.max(len_right);
+
+    if dot_prod > 0.96 && len_diff < 0.20 {
+        let mut avg_dir = dir_left + dir_right;
+        let avg_dir_norm = avg_dir.norm();
+        if avg_dir_norm > 1e-6 {
+            avg_dir /= avg_dir_norm;
+            let target_len = 0.5 * (len_left + len_right);
+            let mid_left = na::Point2::from((corners[0].coords + corners[1].coords) * 0.5);
+            let mid_right = na::Point2::from((corners[3].coords + corners[2].coords) * 0.5);
+            let target_left_top = mid_left - avg_dir * (target_len * 0.5);
+            let target_left_bottom = mid_left + avg_dir * (target_len * 0.5);
+            let target_right_bottom = mid_right + avg_dir * (target_len * 0.5);
+            let target_right_top = mid_right - avg_dir * (target_len * 0.5);
+            let alpha = 0.2;
+            refined[0] = lerp_point(refined[0], target_left_top, alpha);
+            refined[1] = lerp_point(refined[1], target_left_bottom, alpha);
+            refined[2] = lerp_point(refined[2], target_right_bottom, alpha);
+            refined[3] = lerp_point(refined[3], target_right_top, alpha);
+        }
+    }
+
+    Some(refined)
+}
+
+fn lerp_point(from: na::Point2<f64>, to: na::Point2<f64>, alpha: f64) -> na::Point2<f64> {
+    na::Point2::from(from.coords * (1.0 - alpha) + to.coords * alpha)
 }
 
 fn rotate_vec_to_z_axis(a: &na::Vector3<f64>) -> na::Matrix3<f64> {
@@ -409,4 +494,86 @@ fn isotropic_normalize(
         1.0,
     );
     Some((centered_points, transformation_matrix))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_close(actual: f64, expected: f64, tolerance: f64) {
+        assert!(
+            (actual - expected).abs() <= tolerance,
+            "actual={actual}, expected={expected}, tolerance={tolerance}"
+        );
+    }
+
+    #[test]
+    fn refine_armor_corners_rejects_non_finite_points() {
+        let points = [
+            na::Point2::new(10.0, 20.0),
+            na::Point2::new(10.0, f64::NAN),
+            na::Point2::new(50.0, 40.0),
+            na::Point2::new(50.0, 20.0),
+        ];
+
+        assert!(refine_armor_corners(&points).is_none());
+    }
+
+    #[test]
+    fn refine_armor_corners_regularizes_parallel_lightbars() {
+        let points = [
+            na::Point2::new(10.0, 20.0),
+            na::Point2::new(10.0, 42.0),
+            na::Point2::new(50.0, 38.0),
+            na::Point2::new(50.0, 19.0),
+        ];
+
+        let refined = refine_armor_corners(&points).unwrap();
+        let left_len = (refined[1] - refined[0]).norm();
+        let right_len = (refined[2] - refined[3]).norm();
+
+        assert!((left_len - right_len).abs() < 3.0_f64);
+        assert_close(refined[0].x, 10.0, 1e-9);
+        assert_close(refined[3].x, 50.0, 1e-9);
+    }
+
+    #[test]
+    fn solve_rejects_degenerate_corner_geometry() {
+        let solver = ArmorPnpSolver::new().unwrap();
+        let k = na::Matrix3::new(1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0);
+        let points = [
+            na::Point2::new(10.0, 20.0),
+            na::Point2::new(10.0, 20.0),
+            na::Point2::new(50.0, 40.0),
+            na::Point2::new(50.0, 20.0),
+        ];
+
+        assert!(solver.solve(&points, &k).is_none());
+    }
+
+    #[test]
+    fn refine_armor_corners_keeps_high_yaw_projection() {
+        let points = [
+            na::Point2::new(100.0, 20.0),
+            na::Point2::new(102.0, 70.0),
+            na::Point2::new(120.0, 72.0),
+            na::Point2::new(118.0, 22.0),
+        ];
+
+        assert!(refine_armor_corners(&points).is_some());
+    }
+
+    #[test]
+    fn solve_accepts_nominal_ippe_case() {
+        let solver = ArmorPnpSolver::new().unwrap();
+        let k = na::Matrix3::new(1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0);
+        let points = [
+            na::Point2::new(197.125, 203.125),
+            na::Point2::new(191.25, 231.625),
+            na::Point2::new(235.875, 236.375),
+            na::Point2::new(241.5, 207.375),
+        ];
+
+        assert!(solver.solve(&points, &k).is_some());
+    }
 }
