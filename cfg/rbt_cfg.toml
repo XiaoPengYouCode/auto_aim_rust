@@ -25,7 +25,8 @@ camera_img_width = 1280
 camera_img_height = 720
 infer_img_width = 640
 infer_img_height = 640
-# auto: macOS -> CoreML, x86_64 Linux/Windows -> OpenVINO, other targets -> CPU.
+# auto: macOS -> CoreML, linux aarch64 with CUDA -> TensorRT,
+# x86_64 Linux/Windows -> OpenVINO, other targets -> CPU.
 ort_ep = "auto"
 
 [detector_cfg.armor]

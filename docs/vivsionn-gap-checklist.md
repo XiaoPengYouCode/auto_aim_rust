@@ -18,7 +18,7 @@ This checklist tracks the functional gaps found while comparing this Rust worksp
 | [ ] P1 离线录制/回放 | 可录 `.avi + .csv`，强制 task mode 回放 | 缺主链路复盘工具 | 调现场问题很关键 |
 | [ ] P1 通信/MPC smoke 工具 | `testSerial`、`can_mpc_yaw_test` 工具链完整 | `comm_test` 基本空 | 接 CAN 后应尽快补 |
 | [ ] P2 显示/HUD/录制旁路 | MJPEG/Rerun/HUD/CSV/plot 脚本多 | 有 Rerun 和日志，但观测面较薄 | 影响调试效率 |
-| [ ] P2 TRT/ROI/CUDA 性能路径 | TensorRT/CUDA 预处理更贴 Jetson | ORT + ONNX EP | 不是功能缺口，先看实测延迟 |
+| [ ] P2 TRT/ROI/CUDA 性能路径 | TensorRT/CUDA 预处理更贴 Jetson | `auto` 在 linux aarch64 检测 CUDA 后优先 TensorRT，否则 CPU fallback；其他平台继续走既有 CoreML/OpenVINO/CPU | TensorRT EP 选择已接，ROI/CUDA 预处理仍未接 |
 | [x] 已基本对齐：模式路由 | `AutoShot`/`Outpost`/`Buff` 路由切换 | `RuntimeRouter`/`ModeContext` 已有 | 这块方向对 |
 | [x] 已基本对齐：yaw 发控主链 | yaw planner、二阶 MPC、shot phase | Rust 已迁主干 | 主要剩验证/调参 |
 | [x] 已基本对齐：CAN 协议格式 | `0x100`/`0x203`/`0x204` 协议 | `rbt_comm_frame.rs` 有实现和单测 | 协议定义不是短板 |

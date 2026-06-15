@@ -29,6 +29,15 @@ fn default_execution_provider_for_target() -> OrtExecutionProvider {
     OrtExecutionProvider::CoreML
 }
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn default_execution_provider_for_target() -> OrtExecutionProvider {
+    if linux_aarch64_cuda_available() {
+        OrtExecutionProvider::TensorRT
+    } else {
+        OrtExecutionProvider::CPU
+    }
+}
+
 #[cfg(all(
     not(target_os = "macos"),
     target_arch = "x86_64",
@@ -40,6 +49,7 @@ fn default_execution_provider_for_target() -> OrtExecutionProvider {
 
 #[cfg(not(any(
     target_os = "macos",
+    all(target_os = "linux", target_arch = "aarch64"),
     all(
         target_arch = "x86_64",
         any(target_os = "linux", target_os = "windows")
@@ -139,6 +149,44 @@ fn configure_openvino(_session_builder: SessionBuilder) -> RbtResult<SessionBuil
     ))
 }
 
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn linux_aarch64_cuda_available() -> bool {
+    const CUDA_DIRS: &[&str] = &[
+        "/usr/local/cuda",
+        "/usr/local/cuda/targets/aarch64-linux",
+        "/usr/lib/aarch64-linux-gnu/tegra",
+    ];
+    const CUDA_LIB_DIRS: &[&str] = &[
+        "/usr/lib/aarch64-linux-gnu",
+        "/usr/lib/aarch64-linux-gnu/tegra",
+        "/usr/local/cuda/lib64",
+        "/usr/local/cuda/targets/aarch64-linux/lib",
+    ];
+
+    CUDA_DIRS
+        .iter()
+        .any(|path| std::path::Path::new(path).exists())
+        || CUDA_LIB_DIRS
+            .iter()
+            .any(|dir| directory_has_any_library(dir, &["libcuda.so", "libcudart.so"]))
+}
+
+#[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+fn directory_has_any_library(dir: &str, library_prefixes: &[&str]) -> bool {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return false;
+    };
+    entries.filter_map(Result::ok).any(|entry| {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            return false;
+        };
+        library_prefixes
+            .iter()
+            .any(|prefix| name == *prefix || name.starts_with(&format!("{prefix}.")))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,6 +221,16 @@ mod tests {
             resolve_execution_provider("cpu"),
             Some(OrtExecutionProvider::CPU)
         );
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "aarch64"))]
+    #[test]
+    fn linux_aarch64_auto_uses_cuda_or_cpu() {
+        let provider = default_execution_provider();
+        assert!(matches!(
+            provider,
+            OrtExecutionProvider::TensorRT | OrtExecutionProvider::CPU
+        ));
     }
 
     #[cfg(target_os = "macos")]

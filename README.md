@@ -62,6 +62,8 @@
 3.  **设置环境变量** (每次打开终端都需要执行，建议自行持久化):
     ```bash
     # This sets the library path to find ONNX Runtime and OpenVINO native libraries.
+    # On linux aarch64, ort_ep = "auto" uses TensorRT when CUDA/TensorRT libraries are visible,
+    # otherwise it falls back to CPU. Add your Jetson CUDA/TensorRT library paths here if needed.
     # Note: If your Python version is not 3.11, adjust the path accordingly.
     export LD_LIBRARY_PATH="$PWD/.venv/lib64/python3.11/site-packages/onnxruntime/capi:$PWD/.venv/lib64/python3.11/site-packages/openvino/libs:$LD_LIBRARY_PATH"
     ```
