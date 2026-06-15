@@ -8,7 +8,7 @@ This checklist tracks the functional gaps found while comparing this Rust worksp
 | [ ] P0 相机/视频源 | 海康相机、模式切曝光、离线 `.avi + .csv` 回放 | 固定 ffmpeg 读离线视频 | 必补。不上这个很难常驻上车 |
 | [ ] P0 常驻机器人入口 | `supervisor + YoloDetect()` 常驻运行 | 视频结束进程退出 | 实车稳定性缺口 |
 | [x] P0 装甲板 pitch 弹道控制 | 发控会算重力补偿并下发 pitch | 装甲板路线已根据 planner 目标位置计算弹道 pitch，并随 yaw 一起下发 | 已补齐装甲板 3D 发控输出 |
-| [x] P0 YPD geometry recovery | 有 armor jump 后几何恢复、协方差膨胀 | tracker 在多装甲板观测后打开 recovery window，并在连续几何 mismatch 后膨胀 `dr/h` covariance | 已补齐跳板、错配、重获相关基础恢复逻辑 |
+| [x] P0 YPD geometry recovery | 有 armor jump 后几何恢复、协方差膨胀，jump 后短时禁火 | tracker 在多装甲板观测后打开 recovery window，并在连续几何 mismatch 后膨胀 `dr/h` covariance；估计器在 jump 后短时拉低 `observation_stable`，让发控保持瞄准但不自动开火 | 已补齐跳板、错配、重获、协方差恢复和开火观测稳定门控 |
 | [x] P0 前哨站特化 | outpost 高度相位锁定、半径先验、yaw 恢复 | tracker 已做 outpost observed/radial yaw 转换、高度相位锁定、锁定高度冻结、半径先验和 rejected update 门控 | 已补齐前哨站专用 tracker 路径 |
 | [x] P0 能量机关 R 圆心/切换门控 | `Buff_Detector` 有 R 圆心修正、模板/轮廓 fallback、锁定门控 | solve stage 已修正不一致 R 圆心几何，tracker 已对大符目标切换做 defer/rebind phase gate | 本轮补了 R 圆心和切换门控；模板/轮廓 fallback 仍未纳入 |
 | [x] P0 能量机关 tracker/aimer | 相位 EKF、大小符曲线模型、相位化预瞄、pitch lead | 大符曲线 EKF（基于共享不定长 EKF）+ 两轮飞行时间迭代 + yaw preview horizon + pitch lead + 配置化偏置 | 大符走 `BigBuffCurveEskf` 曲线预测（`speed=a·sin(phase)+base-a`），小符保留常速；aimer 两轮弹道迭代、yaw MPC horizon 由 tracker 预瞄生成 |

@@ -83,6 +83,8 @@ cam_k = [1600.0, 0.0, 320.0, 0.0, 1705.7, 192.0, 0.0, 0.0, 1.0]
 [estimator_cfg]
 armor_lost_wait_duration_ms = 100
 enemy_lost_wait_duration_ms = 1000
+fire_block_on_armor_jump = true
+fire_armor_jump_block_frames = 3
 ypd_geometry_recovery_window_frames = 24
 ypd_geometry_recovery_cooldown_frames = 12
 ypd_geometry_recovery_mismatch_required_streak = 2

@@ -351,6 +351,10 @@ impl CamCfg {
 pub struct EstimatorCfg {
     armor_lost_wait_duration_ms: u64,
     enemy_lost_wait_duration_ms: u64,
+    #[serde(default = "default_fire_block_on_armor_jump")]
+    pub fire_block_on_armor_jump: bool,
+    #[serde(default = "default_fire_armor_jump_block_frames")]
+    pub fire_armor_jump_block_frames: usize,
     #[serde(default = "default_ypd_geometry_recovery_window_frames")]
     pub ypd_geometry_recovery_window_frames: usize,
     #[serde(default = "default_ypd_geometry_recovery_cooldown_frames")]
@@ -371,6 +375,14 @@ pub struct EstimatorCfg {
     pub ypd_geometry_recovery_min_h_variance: f64,
     // top1_activate_w: f64,
     // top2_activate_w: f64,
+}
+
+fn default_fire_block_on_armor_jump() -> bool {
+    true
+}
+
+fn default_fire_armor_jump_block_frames() -> usize {
+    3
 }
 
 fn default_ypd_geometry_recovery_window_frames() -> usize {
