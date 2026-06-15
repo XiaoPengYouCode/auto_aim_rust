@@ -179,6 +179,8 @@ pub struct RbtEstimator {
     ypd_angle_tracker: YpdAngleTracker,
     latest_tracker_snapshot: Option<YpdTrackerSnapshot>,
     last_update_tp: Option<Instant>,
+    fire_observation_hold_frames: usize,
+    previous_multi_armor_observation: bool,
     pub enemy_id: EnemyId,
     pub fire: bool,             // 当前是否开火
     pub single_or_double: bool, // 当前帧是否有多装甲板观测
@@ -191,6 +193,8 @@ impl RbtEstimator {
             ypd_angle_tracker: YpdAngleTracker::new(),
             latest_tracker_snapshot: None,
             last_update_tp: None,
+            fire_observation_hold_frames: 0,
+            previous_multi_armor_observation: false,
             enemy_id,
             fire: false,
             single_or_double: false,
@@ -208,10 +212,13 @@ impl RbtEstimator {
         ) {
             self.ypd_angle_tracker.reset();
             self.latest_tracker_snapshot = None;
+            self.reset_fire_observation_hold();
         }
 
         self.update_global_vars(solved_enemy);
+        let tracker_was_initialized = self.ypd_angle_tracker.is_initialized();
         self.update_tracker(cfg, solved_enemy.as_ref(), dt_s);
+        self.update_fire_observation_hold(cfg, solved_enemy.is_some(), tracker_was_initialized);
     }
 
     pub fn snapshot(&self) -> Option<EnemyTrackSnapshot> {
@@ -245,7 +252,8 @@ impl RbtEstimator {
             fire_permit: self.fire,
             motion_state: target_motion_state(&state),
             motion_uniform: motion_uniform(tracker_snapshot),
-            observation_stable: observation_stable(tracker_snapshot),
+            observation_stable: observation_stable(tracker_snapshot)
+                && self.fire_observation_hold_frames == 0,
             motion_translation_burst_metric: metric_mm_to_m(
                 tracker_snapshot.motion_translation_burst_metric,
             ),
@@ -266,6 +274,37 @@ impl RbtEstimator {
             .as_ref()
             .map(|s| s.armors.len() > 1)
             .unwrap_or(false);
+    }
+
+    fn update_fire_observation_hold(
+        &mut self,
+        cfg: &EstimatorCfg,
+        has_solution: bool,
+        tracker_was_initialized: bool,
+    ) {
+        if !has_solution {
+            self.reset_fire_observation_hold();
+            return;
+        }
+
+        let entering_multi_armor_observation =
+            self.single_or_double && !self.previous_multi_armor_observation;
+        if cfg.fire_block_on_armor_jump
+            && tracker_was_initialized
+            && entering_multi_armor_observation
+        {
+            self.fire_observation_hold_frames = self
+                .fire_observation_hold_frames
+                .max(cfg.fire_armor_jump_block_frames);
+        } else if self.fire_observation_hold_frames > 0 {
+            self.fire_observation_hold_frames -= 1;
+        }
+        self.previous_multi_armor_observation = self.single_or_double;
+    }
+
+    fn reset_fire_observation_hold(&mut self) {
+        self.fire_observation_hold_frames = 0;
+        self.previous_multi_armor_observation = false;
     }
 
     pub fn tracker_snapshot(&self) -> Option<&YpdTrackerSnapshot> {
@@ -500,6 +539,8 @@ mod tests {
             "\
 armor_lost_wait_duration_ms = 100
 enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
+fire_block_on_armor_jump = true
+fire_armor_jump_block_frames = 3
 "
         ))
         .unwrap()
@@ -527,12 +568,68 @@ enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
         }
     }
 
+    fn solved_enemy_with_armors(centers: &[(f32, f32)]) -> RbtSolvedResult {
+        let mut armors = Vec::with_capacity(centers.len());
+        for (idx, (center_x, center_y)) in centers.iter().copied().enumerate() {
+            let detected_armor = DetectedArmor::new(
+                RbtImgPoint2::new_screen_pixel(center_x, center_y),
+                RbtImgPoint2::new_screen_pixel(center_x - 10.0, center_y - 5.0),
+                RbtImgPoint2::new_screen_pixel(center_x - 10.0, center_y + 5.0),
+                RbtImgPoint2::new_screen_pixel(center_x + 10.0, center_y + 5.0),
+                RbtImgPoint2::new_screen_pixel(center_x + 10.0, center_y - 5.0),
+                idx,
+            );
+            let pose = Isometry3::translation(200.0 + idx as f64 * 20.0, idx as f64 * 200.0, 100.0);
+            armors.push(SolvedArmor::new(
+                detected_armor,
+                pose,
+                idx as f64 * 90.0,
+                0.0,
+                200.0,
+            ));
+        }
+
+        RbtSolvedResult {
+            coord: RbtCylindricalPoint2::new(1_000.0, 0.0),
+            armors,
+        }
+    }
+
     fn frame(targets: &[(EnemyId, (f32, f32))]) -> RbtSolvedResults {
         let mut solved_enemies = RbtSolvedResults::default();
         for (enemy_id, (x, y)) in targets {
             solved_enemies.insert(*enemy_id, Some(solved_enemy(*x, *y)));
         }
         solved_enemies
+    }
+
+    fn stable_tracker_snapshot() -> YpdTrackerSnapshot {
+        let mut state11d = [0.0; 11];
+        state11d[8] = 200.0;
+
+        YpdTrackerSnapshot {
+            state11d,
+            state9: [0.0; 9],
+            tracked_id: 0,
+            armor_num: 4,
+            tracked_armor_xyza: [200.0, 0.0, 0.0, 0.0],
+            predicted_armors_xyza: Vec::new(),
+            last_nis: 0.0,
+            converged: true,
+            diverged: false,
+            recent_nis_failures: 0,
+            motion_translation_burst_metric: 0.0,
+            motion_translation_drift_metric: 0.0,
+            motion_yaw_accel_metric: 0.0,
+        }
+    }
+
+    fn estimator_with_stable_snapshot() -> RbtEstimator {
+        let mut estimator = RbtEstimator::new(EnemyId::Hero1);
+        estimator.state = EstimatorStateMachine::Track { jump: false };
+        estimator.fire = true;
+        estimator.latest_tracker_snapshot = Some(stable_tracker_snapshot());
+        estimator
     }
 
     #[test]
@@ -625,5 +722,71 @@ enemy_lost_wait_duration_ms = {enemy_lost_wait_duration_ms}
         handler_poll.update(&cfg, RbtSolvedResults::default());
 
         assert!(handler_poll.selected_snapshot().is_none());
+    }
+
+    #[test]
+    fn fire_hold_blocks_stable_tracker_observation() {
+        let mut estimator = estimator_with_stable_snapshot();
+
+        assert!(estimator.snapshot().unwrap().observation_stable);
+
+        estimator.fire_observation_hold_frames = 1;
+
+        assert!(!estimator.snapshot().unwrap().observation_stable);
+    }
+
+    #[test]
+    fn armor_jump_starts_and_releases_fire_hold_for_configured_frames() {
+        let cfg = estimator_cfg(1_000);
+        let mut estimator = RbtEstimator::new(EnemyId::Hero1);
+        let single = Some(solved_enemy(320.0, 192.0));
+        let double = Some(solved_enemy_with_armors(&[(320.0, 192.0), (350.0, 192.0)]));
+
+        estimator.update(&cfg, &single);
+        estimator.update(&cfg, &single);
+        assert_eq!(estimator.fire_observation_hold_frames, 0);
+
+        estimator.update(&cfg, &double);
+        assert_eq!(estimator.fire_observation_hold_frames, 3);
+
+        estimator.update(&cfg, &single);
+        assert_eq!(estimator.fire_observation_hold_frames, 2);
+        estimator.update(&cfg, &single);
+        assert_eq!(estimator.fire_observation_hold_frames, 1);
+        estimator.update(&cfg, &single);
+        assert_eq!(estimator.fire_observation_hold_frames, 0);
+    }
+
+    #[test]
+    fn armor_jump_fire_block_can_be_disabled() {
+        let mut cfg = estimator_cfg(1_000);
+        cfg.fire_block_on_armor_jump = false;
+        let mut estimator = RbtEstimator::new(EnemyId::Hero1);
+        let single = Some(solved_enemy(320.0, 192.0));
+        let double = Some(solved_enemy_with_armors(&[(320.0, 192.0), (350.0, 192.0)]));
+
+        estimator.update(&cfg, &single);
+        estimator.update(&cfg, &single);
+        estimator.update(&cfg, &double);
+
+        assert_eq!(estimator.fire_observation_hold_frames, 0);
+    }
+
+    #[test]
+    fn no_target_resets_armor_jump_fire_hold() {
+        let cfg = estimator_cfg(1_000);
+        let mut estimator = RbtEstimator::new(EnemyId::Hero1);
+        let single = Some(solved_enemy(320.0, 192.0));
+        let double = Some(solved_enemy_with_armors(&[(320.0, 192.0), (350.0, 192.0)]));
+
+        estimator.update(&cfg, &single);
+        estimator.update(&cfg, &single);
+        estimator.update(&cfg, &double);
+        assert!(estimator.fire_observation_hold_frames > 0);
+
+        estimator.update(&cfg, &None);
+
+        assert_eq!(estimator.fire_observation_hold_frames, 0);
+        assert!(!estimator.previous_multi_armor_observation);
     }
 }

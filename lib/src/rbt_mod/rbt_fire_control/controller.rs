@@ -684,4 +684,18 @@ mod tests {
         assert_eq!(stale_feedback.shot_mode, ShotMode::AimOnly);
         assert!(!controller.last_stats().gate_mcu);
     }
+
+    #[test]
+    fn unstable_observation_blocks_fire_but_keeps_aiming() {
+        let mut controller = FireControlController::new().unwrap();
+        let mut target = target(TargetMotionState::Static);
+        target.observation_stable = false;
+
+        let control = controller.update(input(Some(target), true, true));
+        let stats = controller.last_stats();
+
+        assert_eq!(control.shot_mode, ShotMode::AimOnly);
+        assert!(stats.gate_mcu);
+        assert!(!stats.gate_observation);
+    }
 }
