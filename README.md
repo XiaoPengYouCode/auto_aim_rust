@@ -15,7 +15,7 @@
 ## 🧠 特性 Highlights
 
 - 🏆 **面向比赛优化**：针对 `RoboMaster` 赛场需求深度定制，兼顾实时性与可靠性
-- 🦀 **全 Rust 实现**：零成本抽象，安全而强大。基于 `ort-rs` 实现跨平台端侧推理部署（支持几乎全部onnxruntime-EP，包括`TensorRT`, `OpenVino`, `RKNN`, `CANN` ... ）
+- 🦀 **全 Rust 实现**：零成本抽象，安全而强大。基于 `ort-rs` 实现跨平台端侧推理部署（支持几乎全部onnxruntime-EP，包括`TensorRT`, `CUDA`, `OpenVino`, `RKNN`, `CANN` ... ）
 - 🚦 **多线程任务调度**：基于 `tokio` 打造全异步推理流，实时并发
 - 🎯 **手搓 PnP 求解器（No OpenCV）**：高度特化 IPPE-PnP 模块，硬编码装甲板参数，省去平面化和各向同性归一化操作，解算速度超快
 - ⚙️ **状态估计算法**：基于 `ESKF` 的状态估计器，内置装甲板选择与跟踪模块(Todo)，，使用双装甲板反向投影，机器人解算更加精确
@@ -63,7 +63,7 @@
     ```bash
     # This sets the library path to find ONNX Runtime and OpenVINO native libraries.
     # On linux aarch64, ort_ep = "auto" uses TensorRT when CUDA/TensorRT libraries are visible,
-    # otherwise it falls back to CPU. Add your Jetson CUDA/TensorRT library paths here if needed.
+    # CUDA when CUDA/cuDNN libraries are visible, otherwise CPU. Add your Jetson library paths here if needed.
     # Note: If your Python version is not 3.11, adjust the path accordingly.
     export LD_LIBRARY_PATH="$PWD/.venv/lib64/python3.11/site-packages/onnxruntime/capi:$PWD/.venv/lib64/python3.11/site-packages/openvino/libs:$LD_LIBRARY_PATH"
     ```
