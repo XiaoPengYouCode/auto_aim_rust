@@ -564,8 +564,10 @@ fn run_video_preprocess_loop(
             frame_id = frame_id.wrapping_add(1);
             let mut rbt_frame = RbtFrame::new();
             let preprocess_started = StdInstant::now();
+            let gray_frame = frame_img.to_luma8();
             let transform = preprocess_letterbox_f16(rbt_frame.pre_data(), &frame_img);
             summary.preprocess_total += preprocess_started.elapsed();
+            rbt_frame.set_gray_frame(gray_frame);
             rbt_frame.set_letterbox_transform(transform);
             rbt_frame.set_id(frame_id);
             rbt_frame.set_state(RbtFrameStage::Pre);
@@ -912,7 +914,7 @@ pub fn post_process(
                     );
                     let decoded_armor_count = armors.values().map(Vec::len).sum::<usize>();
                     let decoded_enemy_count = armors.len();
-                    let solved_enemies = enemys_solver(armors, &cam_k, &rec)?;
+                    let solved_enemies = enemys_solver(armors, &cam_k, frame.gray_frame(), &rec)?;
                     let solved_armor_count = solved_enemies
                         .values()
                         .filter_map(|result| result.as_ref())
@@ -1694,5 +1696,9 @@ mod tests {
         assert_eq!(transform.image_width, frame.width());
         assert_eq!(transform.image_height, frame.height());
         assert!(transform.scale > 0.0);
+
+        let gray = frame.to_luma8();
+        assert_eq!(gray.width(), frame.width());
+        assert_eq!(gray.height(), frame.height());
     }
 }

@@ -8,6 +8,7 @@ use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
 use crate::rbt_mod::rbt_armor::detected_armor::DetectedArmor;
 use crate::rbt_mod::rbt_armor::solved_armor::SolvedArmor;
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyId;
+use image::GrayImage;
 use log::{debug, warn};
 use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
@@ -76,6 +77,7 @@ pub enum DetectedEnemyArmor {
 pub fn enemys_solver(
     detector_result: HashMap<EnemyId, Vec<DetectedArmor>>,
     cam_k: &na::Matrix3<f64>,
+    gray_frame: Option<&GrayImage>,
     rec: &rr::RecordingStream,
 ) -> RbtResult<RbtSolvedResults> {
     // 0. 构建全单位解算结果，内部是一个HashMap
@@ -96,7 +98,9 @@ pub fn enemys_solver(
         ))?;
         for armor in enemy_armors.into_iter() {
             let armor_key_points_na = armor.corner_points().map(|p| p.into());
-            if let Some(camera_pose) = pnp_solver.solve(&armor_key_points_na, cam_k) {
+            if let Some(camera_pose) =
+                pnp_solver.solve_with_gray(&armor_key_points_na, cam_k, gray_frame)
+            {
                 let solved_armor = SolvedArmor::new(armor, camera_pose, 0.0, 0.0, 0.0);
                 enemy_solved_armors.push(solved_armor);
             } else {

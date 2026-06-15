@@ -2,6 +2,7 @@ use tokio::time::Instant;
 
 use crate::rbt_infra::rbt_global::FAILED_COUNT;
 use crate::rbt_mod::rbt_detector::rbt_yolo::LetterboxTransform;
+use image::GrayImage;
 use log::{debug, error, warn};
 
 pub const ARMOR_INPUT_WIDTH: usize = 640;
@@ -42,6 +43,7 @@ impl RbtFrame {
                 ]),
                 infer_post: nd::Array2::<f32>::zeros([ARMOR_OUTPUT_ROWS, ARMOR_OUTPUT_COLS]),
                 letterbox: LetterboxTransform::default(),
+                gray_frame: None,
             },
             id: 0,
             stage: RbtFrameStage::Init,
@@ -86,6 +88,14 @@ impl RbtFrame {
 
     pub fn letterbox_transform(&self) -> LetterboxTransform {
         self.data.letterbox
+    }
+
+    pub fn set_gray_frame(&mut self, gray_frame: GrayImage) {
+        self.data.gray_frame = Some(gray_frame);
+    }
+
+    pub fn gray_frame(&self) -> Option<&GrayImage> {
+        self.data.gray_frame.as_ref()
     }
 
     pub fn time_used(&self) -> std::time::Duration {
@@ -139,4 +149,22 @@ pub struct RbtFrameData {
     pre_infer: nd::Array4<half::f16>,
     infer_post: nd::Array2<f32>,
     letterbox: LetterboxTransform,
+    gray_frame: Option<GrayImage>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rbt_frame_carries_original_gray_frame() {
+        let mut frame = RbtFrame::new();
+        let gray = GrayImage::new(32, 24);
+
+        frame.set_gray_frame(gray);
+
+        let stored = frame.gray_frame().expect("gray frame should be stored");
+        assert_eq!(stored.width(), 32);
+        assert_eq!(stored.height(), 24);
+    }
 }

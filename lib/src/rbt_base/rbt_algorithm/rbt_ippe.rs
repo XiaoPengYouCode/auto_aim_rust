@@ -1,5 +1,6 @@
 /// 针对装甲板场景高度特化的 PnpSolver
 /// 使用 IPPE 方法，四个特征点
+use image::GrayImage;
 use log::error;
 
 // 硬编码的世界坐标，满足 IPPE 的规范坐标系要求 (Z=0, 中心在原点)
@@ -8,6 +9,7 @@ pub const ARMOR_LIGHT_HEIGHT: f64 = 55.0;
 const MAX_REPROJECTION_RMSE_PX: f64 = 8.0;
 const MIN_ARMOR_DEPTH_MM: f64 = 100.0;
 const MAX_ARMOR_DEPTH_MM: f64 = 12_000.0;
+const BRIGHT_PIXEL_THRESHOLD: u8 = 150;
 
 // 世界坐标系点，原点在装甲板中心，Z=0平面，省去归一化
 const ARMOR_WORLD_POINTS: [na::Point3<f64>; 4] = [
@@ -67,7 +69,16 @@ impl ArmorPnpSolver {
         img_coord: &[na::Point2<f64>; 4],
         cam_k: &na::Matrix3<f64>,
     ) -> Option<na::Isometry3<f64>> {
-        let refined_img_coord = refine_armor_corners(img_coord)?;
+        self.solve_with_gray(img_coord, cam_k, None)
+    }
+
+    pub fn solve_with_gray(
+        &self,
+        img_coord: &[na::Point2<f64>; 4],
+        cam_k: &na::Matrix3<f64>,
+        gray_img: Option<&GrayImage>,
+    ) -> Option<na::Isometry3<f64>> {
+        let refined_img_coord = refine_armor_corners(img_coord, gray_img)?;
         // 使用 IPPE 算法求解出两个可能解
         if let Some((pose1, pose2)) = self.solve_ippe(&refined_img_coord, cam_k) {
             // 简单判断解的合理性
@@ -358,7 +369,10 @@ impl ArmorPnpSolver {
     }
 }
 
-fn refine_armor_corners(corners: &[na::Point2<f64>; 4]) -> Option<[na::Point2<f64>; 4]> {
+fn refine_armor_corners(
+    corners: &[na::Point2<f64>; 4],
+    gray_img: Option<&GrayImage>,
+) -> Option<[na::Point2<f64>; 4]> {
     if corners
         .iter()
         .any(|point| !point.coords.iter().all(|value| value.is_finite()))
@@ -366,17 +380,22 @@ fn refine_armor_corners(corners: &[na::Point2<f64>; 4]) -> Option<[na::Point2<f6
         return None;
     }
 
-    let mut refined = *corners;
-    let left = corners[1] - corners[0];
-    let right = corners[2] - corners[3];
+    let mut refined = if let Some(gray_img) = gray_img {
+        refine_lightbar_endpoints_from_gray(corners, gray_img).unwrap_or(*corners)
+    } else {
+        *corners
+    };
+
+    let left = refined[1] - refined[0];
+    let right = refined[2] - refined[3];
     let len_left = left.norm();
     let len_right = right.norm();
     if len_left <= 1e-3 || len_right <= 1e-3 {
         return None;
     }
 
-    let width_top = (corners[3] - corners[0]).norm();
-    let width_bottom = (corners[2] - corners[1]).norm();
+    let width_top = (refined[3] - refined[0]).norm();
+    let width_bottom = (refined[2] - refined[1]).norm();
     let avg_height = 0.5 * (len_left + len_right);
     let avg_width = 0.5 * (width_top + width_bottom);
     if avg_width <= 1e-3 || avg_height <= 1e-3 {
@@ -399,8 +418,8 @@ fn refine_armor_corners(corners: &[na::Point2<f64>; 4]) -> Option<[na::Point2<f6
         if avg_dir_norm > 1e-6 {
             avg_dir /= avg_dir_norm;
             let target_len = 0.5 * (len_left + len_right);
-            let mid_left = na::Point2::from((corners[0].coords + corners[1].coords) * 0.5);
-            let mid_right = na::Point2::from((corners[3].coords + corners[2].coords) * 0.5);
+            let mid_left = na::Point2::from((refined[0].coords + refined[1].coords) * 0.5);
+            let mid_right = na::Point2::from((refined[3].coords + refined[2].coords) * 0.5);
             let target_left_top = mid_left - avg_dir * (target_len * 0.5);
             let target_left_bottom = mid_left + avg_dir * (target_len * 0.5);
             let target_right_bottom = mid_right + avg_dir * (target_len * 0.5);
@@ -414,6 +433,124 @@ fn refine_armor_corners(corners: &[na::Point2<f64>; 4]) -> Option<[na::Point2<f6
     }
 
     Some(refined)
+}
+
+fn refine_lightbar_endpoints_from_gray(
+    corners: &[na::Point2<f64>; 4],
+    gray_img: &GrayImage,
+) -> Option<[na::Point2<f64>; 4]> {
+    if gray_img.width() == 0 || gray_img.height() == 0 {
+        return None;
+    }
+
+    let mut refined = *corners;
+    refine_one_lightbar(&mut refined, gray_img, 0, 1);
+    refine_one_lightbar(&mut refined, gray_img, 3, 2);
+    Some(refined)
+}
+
+fn refine_one_lightbar(
+    corners: &mut [na::Point2<f64>; 4],
+    gray_img: &GrayImage,
+    bottom_idx: usize,
+    top_idx: usize,
+) {
+    let bottom = corners[bottom_idx];
+    let top = corners[top_idx];
+    let segment = top - bottom;
+    let length = segment.norm();
+    if length <= 1e-3 {
+        return;
+    }
+
+    let width = length * 0.5;
+    let x_min = ((bottom.x.min(top.x) - width).floor().max(0.0)) as u32;
+    let x_max = ((bottom.x.max(top.x) + width)
+        .ceil()
+        .min((gray_img.width().saturating_sub(1)) as f64)) as u32;
+    let y_min = ((bottom.y.min(top.y) - length * 0.5).floor().max(0.0)) as u32;
+    let y_max = ((bottom.y.max(top.y) + length * 0.5)
+        .ceil()
+        .min((gray_img.height().saturating_sub(1)) as f64)) as u32;
+    if x_min > x_max || y_min > y_max {
+        return;
+    }
+
+    let mut bright_points = Vec::new();
+    for y in y_min..=y_max {
+        for x in x_min..=x_max {
+            if gray_img.get_pixel(x, y)[0] > BRIGHT_PIXEL_THRESHOLD {
+                bright_points.push(na::Point2::new(x as f64, y as f64));
+            }
+        }
+    }
+    if bright_points.len() <= 10 {
+        return;
+    }
+
+    let Some(axis) = principal_axis(&bright_points) else {
+        return;
+    };
+    let mut axis = axis;
+    if axis.dot(&segment) < 0.0 {
+        axis = -axis;
+    }
+
+    let center = na::Point2::from((bottom.coords + top.coords) * 0.5);
+    let mut projections = bright_points
+        .iter()
+        .map(|point| (point - center).dot(&axis))
+        .filter(|projection| projection.is_finite())
+        .collect::<Vec<_>>();
+    if projections.len() <= 10 {
+        return;
+    }
+    projections.sort_by(|lhs, rhs| lhs.total_cmp(rhs));
+    let low_idx = ((projections.len() - 1) as f64 * 0.05).round() as usize;
+    let high_idx = ((projections.len() - 1) as f64 * 0.95).round() as usize;
+    let refined_bottom = center + axis * projections[low_idx];
+    let refined_top = center + axis * projections[high_idx];
+
+    if (refined_bottom - bottom).norm() < 8.0 && (refined_top - top).norm() < 8.0 {
+        corners[bottom_idx] = refined_bottom;
+        corners[top_idx] = refined_top;
+    }
+}
+
+fn principal_axis(points: &[na::Point2<f64>]) -> Option<na::Vector2<f64>> {
+    if points.is_empty() {
+        return None;
+    }
+    let n = points.len() as f64;
+    let mean = points
+        .iter()
+        .fold(na::Vector2::<f64>::zeros(), |acc, point| acc + point.coords)
+        / n;
+    let mut cov_xx = 0.0;
+    let mut cov_xy = 0.0;
+    let mut cov_yy = 0.0;
+    for point in points {
+        let centered = point.coords - mean;
+        cov_xx += centered.x * centered.x;
+        cov_xy += centered.x * centered.y;
+        cov_yy += centered.y * centered.y;
+    }
+    cov_xx /= n;
+    cov_xy /= n;
+    cov_yy /= n;
+
+    let trace = cov_xx + cov_yy;
+    let det = cov_xx * cov_yy - cov_xy * cov_xy;
+    let discriminant = (trace * trace * 0.25 - det).max(0.0).sqrt();
+    let lambda = trace * 0.5 + discriminant;
+    let axis = if cov_xy.abs() > 1e-9 {
+        na::Vector2::new(lambda - cov_yy, cov_xy)
+    } else if cov_xx >= cov_yy {
+        na::Vector2::x()
+    } else {
+        na::Vector2::y()
+    };
+    axis.try_normalize(1e-9)
 }
 
 fn lerp_point(from: na::Point2<f64>, to: na::Point2<f64>, alpha: f64) -> na::Point2<f64> {
@@ -516,7 +653,7 @@ mod tests {
             na::Point2::new(50.0, 20.0),
         ];
 
-        assert!(refine_armor_corners(&points).is_none());
+        assert!(refine_armor_corners(&points, None).is_none());
     }
 
     #[test]
@@ -528,13 +665,41 @@ mod tests {
             na::Point2::new(50.0, 19.0),
         ];
 
-        let refined = refine_armor_corners(&points).unwrap();
+        let refined = refine_armor_corners(&points, None).unwrap();
         let left_len = (refined[1] - refined[0]).norm();
         let right_len = (refined[2] - refined[3]).norm();
 
         assert!((left_len - right_len).abs() < 3.0_f64);
         assert_close(refined[0].x, 10.0, 1e-9);
         assert_close(refined[3].x, 50.0, 1e-9);
+    }
+
+    #[test]
+    fn gray_refinement_moves_lightbar_endpoints_toward_bright_pixels() {
+        let mut gray = GrayImage::new(80, 80);
+        for y in 16..=44 {
+            for x in 9..=11 {
+                gray.put_pixel(x, y, image::Luma([220]));
+            }
+        }
+        for y in 18..=46 {
+            for x in 49..=51 {
+                gray.put_pixel(x, y, image::Luma([220]));
+            }
+        }
+        let points = [
+            na::Point2::new(10.0, 20.0),
+            na::Point2::new(10.0, 42.0),
+            na::Point2::new(50.0, 44.0),
+            na::Point2::new(50.0, 22.0),
+        ];
+
+        let refined = refine_armor_corners(&points, Some(&gray)).unwrap();
+
+        assert!(refined[0].y < points[0].y);
+        assert!(refined[1].y > points[1].y);
+        assert!(refined[3].y < points[3].y);
+        assert!(refined[2].y > points[2].y);
     }
 
     #[test]
@@ -560,7 +725,7 @@ mod tests {
             na::Point2::new(118.0, 22.0),
         ];
 
-        assert!(refine_armor_corners(&points).is_some());
+        assert!(refine_armor_corners(&points, None).is_some());
     }
 
     #[test]
