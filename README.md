@@ -1,3 +1,7 @@
+> [!WARNING]
+> This repository has been archived and is no longer maintained here.
+> Please use [`3SE-Competitive-Robotics-Team/se3-mono`](https://github.com/3SE-Competitive-Robotics-Team/se3-mono/) instead.
+
 <div align="center">
   <h1>🤖 自 瞄 🎯</h1>
 </div>
