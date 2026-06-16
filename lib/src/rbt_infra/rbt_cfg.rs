@@ -3,6 +3,7 @@ use std::path::Path;
 
 use crate::rbt_bail_error;
 use crate::rbt_infra::rbt_err::{RbtError, RbtResult};
+use crate::rbt_mod::rbt_comm::rbt_comm_frame::TaskMode;
 use crate::rbt_mod::rbt_estimator::rbt_enemy_dynamic_model::EnemyFaction;
 
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
@@ -54,6 +55,8 @@ pub struct GeneralCfg {
     pub can_interface: String,
     #[serde(default = "default_can_enabled")]
     pub can_enabled: bool,
+    #[serde(default = "default_offline_task_mode")]
+    pub offline_task_mode: String,
 }
 
 fn default_can_interface() -> String {
@@ -62,6 +65,27 @@ fn default_can_interface() -> String {
 
 fn default_can_enabled() -> bool {
     true
+}
+
+fn default_offline_task_mode() -> String {
+    "AutoShot".to_string()
+}
+
+impl GeneralCfg {
+    pub fn offline_task_mode(&self) -> TaskMode {
+        match self.offline_task_mode.trim() {
+            "AutoShot" => TaskMode::AutoShot,
+            "HitBigBuff" => TaskMode::HitBigBuff,
+            "HitSmallBuff" => TaskMode::HitSmallBuff,
+            "HitOutpost" => TaskMode::HitOutpost,
+            invalid => {
+                eprintln!(
+                    "请检查 general_cfg/offline_task_mode 设置，当前值 `{invalid}` 无效，回退到 AutoShot"
+                );
+                TaskMode::AutoShot
+            }
+        }
+    }
 }
 
 // 检测器相关配置

@@ -41,8 +41,8 @@ pub enum EnergyMechanismClass {
 impl EnergyMechanismClass {
     fn from_index(index: usize, class_count: usize) -> Option<Self> {
         match (class_count, index) {
-            (2, 0) => Some(Self::Target),
-            (2, 1) => Some(Self::CenterMarker),
+            (2, 0) => Some(Self::RedTarget),
+            (2, 1) => Some(Self::BlueTarget),
             (4, 0) => Some(Self::RedTarget),
             (4, 1) => Some(Self::RedHit),
             (4, 2) => Some(Self::BlueTarget),
@@ -477,8 +477,8 @@ mod tests {
     }
 
     #[test]
-    fn decode_keeps_two_class_target_with_keypoint_dim_three() {
-        let mut output = nd::Array2::<f32>::zeros((21, 2));
+    fn decode_keeps_two_class_color_target_with_keypoint_dim_three() {
+        let mut output = nd::Array2::<f32>::zeros((21, 1));
         output[[0, 0]] = 320.0;
         output[[1, 0]] = 320.0;
         output[[2, 0]] = 100.0;
@@ -503,7 +503,7 @@ mod tests {
         );
 
         assert_eq!(objects.len(), 1);
-        assert_eq!(objects[0].class, EnergyMechanismClass::Target);
+        assert_eq!(objects[0].class, EnergyMechanismClass::RedTarget);
         assert_eq!(stats.nms_kept, 1);
     }
 
@@ -539,5 +539,41 @@ mod tests {
         assert!(objects.is_empty());
         assert_eq!(stats.confidence_pass, 2);
         assert_eq!(stats.target_pass, 1);
+    }
+
+    #[test]
+    fn decode_two_class_target_respects_self_color_filter() {
+        let mut output = nd::Array2::<f32>::zeros((21, 2));
+        for anchor in 0..2 {
+            output[[0, anchor]] = 320.0;
+            output[[1, anchor]] = 320.0;
+            output[[2, anchor]] = 100.0;
+            output[[3, anchor]] = 80.0;
+            for idx in 0..ENERGY_MECHANISM_KEYPOINTS {
+                let base = 6 + idx * 3;
+                output[[base, anchor]] = 300.0 + idx as f32;
+                output[[base + 1, anchor]] = 310.0 + idx as f32;
+                output[[base + 2, anchor]] = 1.0;
+            }
+        }
+        output[[4, 0]] = 0.92; // Red target, should be filtered when self is red.
+        output[[5, 1]] = 0.95; // Blue target, should be kept.
+        let cfg = EnergyMechanismYoloPostprocessCfg {
+            confidence_threshold: 0.5,
+            nms_iou_threshold: 0.4,
+            self_fraction: Some(EnemyFaction::R),
+        };
+
+        let (objects, stats) = decode_energy_mechanism_output_with_stats(
+            &output.view(),
+            LetterboxTransform::default(),
+            &cfg,
+        );
+
+        assert_eq!(objects.len(), 1);
+        assert_eq!(objects[0].class, EnergyMechanismClass::BlueTarget);
+        assert_eq!(stats.confidence_pass, 2);
+        assert_eq!(stats.target_pass, 2);
+        assert_eq!(stats.self_color_pass, 1);
     }
 }

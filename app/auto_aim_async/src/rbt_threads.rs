@@ -52,7 +52,7 @@ use lib::{
     },
 };
 
-const DEFAULT_VIDEO_FILE: &str = "offline_capture_bundle_outpost_rot180.avi";
+const DEFAULT_VIDEO_FILE: &str = "offline_capture_bundle.avi";
 const RAW_RGB_CHANNELS: usize = 3;
 const FIRE_CONTROL_SNAPSHOT_STALE_MS: f64 = 180.0;
 const CONTROL_STATUS_LOG_PERIOD_TICKS: u64 = 50;
@@ -64,6 +64,9 @@ const RERUN_FILTER_FILTERED_CENTER_COLOR: u32 = 0x14DC78FF;
 const RERUN_FILTER_FILTERED_ARMOR_COLOR: u32 = 0x288CFFFF;
 const RERUN_FILTER_VELOCITY_COLOR: u32 = 0xFFFFFFFF;
 const RERUN_FILTER_VELOCITY_ARROW_SCALE_S: f64 = 0.2;
+const RERUN_ENERGY_CENTER_COLOR: u32 = 0xF59E0BFF;
+const RERUN_ENERGY_TARGET_CENTER_COLOR: u32 = 0x10B981FF;
+const RERUN_ENERGY_PREDICT_COLOR: u32 = 0x38BDF8FF;
 
 #[derive(Debug, Clone)]
 pub struct PlannerTrackSnapshot {
@@ -461,6 +464,109 @@ fn log_rerun_filter_snapshot(
     Ok(())
 }
 
+fn energy_position_mm(x: f64, y: f64, z: f64) -> [f32; 3] {
+    [
+        (x * 1_000.0) as f32,
+        (y * 1_000.0) as f32,
+        (z * 1_000.0) as f32,
+    ]
+}
+
+fn log_rerun_energy_mechanism_snapshot(
+    rec: &rr::RecordingStream,
+    seq: u64,
+    target: Option<lib::rbt_mod::rbt_energy_mechanism::EnergyMechanismTrackSnapshot>,
+    center_visible: &mut bool,
+    blade_center_visible: &mut bool,
+    horizon_visible: &mut bool,
+) -> Result<(), rr::RecordingStreamError> {
+    if !rec.is_enabled() {
+        return Ok(());
+    }
+
+    rec.set_time_sequence("energy_estimate_seq", seq as i64);
+
+    if let Some(snapshot) = target {
+        let center = energy_position_mm(
+            snapshot.rune_center_world_m.x,
+            snapshot.rune_center_world_m.y,
+            snapshot.rune_center_world_m.z,
+        );
+        let target_center = energy_position_mm(
+            snapshot.target_center_world_m.x,
+            snapshot.target_center_world_m.y,
+            snapshot.target_center_world_m.z,
+        );
+        let predict_horizon = snapshot
+            .predict_target_horizon(&[0.02, 0.04, 0.06, 0.08, 0.10])
+            .into_iter()
+            .map(|point| energy_position_mm(point.x, point.y, point.z))
+            .collect::<Vec<_>>();
+
+        rec.log(
+            "world/energy_mechanism/center",
+            &rr::Points3D::new([center])
+                .with_colors([RERUN_ENERGY_CENTER_COLOR])
+                .with_radii([26.0]),
+        )?;
+        rec.log(
+            "world/energy_mechanism/blade_center",
+            &rr::Points3D::new([target_center])
+                .with_colors([RERUN_ENERGY_TARGET_CENTER_COLOR])
+                .with_radii([22.0]),
+        )?;
+        rec.log(
+            "world/energy_mechanism/predict_horizon",
+            &rr::LineStrips3D::new([predict_horizon]).with_colors([RERUN_ENERGY_PREDICT_COLOR]),
+        )?;
+
+        rec.log(
+            "time/energy_mechanism/roll_rad",
+            &rr::Scalars::new([snapshot.roll_rad]),
+        )?;
+        rec.log(
+            "time/energy_mechanism/roll_rate_rad_s",
+            &rr::Scalars::new([snapshot.roll_rate_rad_s]),
+        )?;
+        rec.log(
+            "time/energy_mechanism/track_valid",
+            &rr::Scalars::new([if snapshot.track_valid { 1.0 } else { 0.0 }]),
+        )?;
+        rec.log(
+            "time/energy_mechanism/lost",
+            &rr::Scalars::new([if snapshot.lost { 1.0 } else { 0.0 }]),
+        )?;
+
+        *center_visible = true;
+        *blade_center_visible = true;
+        *horizon_visible = true;
+    } else {
+        if *center_visible {
+            rec.log(
+                "world/energy_mechanism/center",
+                &rr::Points3D::new([] as [[f32; 3]; 0]),
+            )?;
+            *center_visible = false;
+        }
+        if *blade_center_visible {
+            rec.log(
+                "world/energy_mechanism/blade_center",
+                &rr::Points3D::new([] as [[f32; 3]; 0]),
+            )?;
+            *blade_center_visible = false;
+        }
+        if *horizon_visible {
+            rec.log(
+                "world/energy_mechanism/predict_horizon",
+                &rr::LineStrips3D::new([] as [Vec<[f32; 3]>; 0]),
+            )?;
+            *horizon_visible = false;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn video_input_path() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("..")
@@ -469,8 +575,7 @@ pub fn video_input_path() -> PathBuf {
         .join(DEFAULT_VIDEO_FILE)
 }
 
-fn default_feedback(bullet_speed_mps: f64) -> SensData {
-    let task_mode = TaskMode::AutoShot;
+fn default_feedback(bullet_speed_mps: f64, task_mode: TaskMode) -> SensData {
     SensData {
         task_mode,
         self_fraction: SelfFraction::Blue,
@@ -493,6 +598,7 @@ fn default_feedback(bullet_speed_mps: f64) -> SensData {
 pub fn pre_process(
     queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
     energy_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+    feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
     detector_cfg: DetectorCfg,
     runtime_router: RuntimeRouter,
     completion: RuntimePipelineCompletion,
@@ -500,7 +606,13 @@ pub fn pre_process(
     tokio::spawn(async move {
         let completion_guard = completion.clone();
         let result = tokio::task::spawn_blocking(move || {
-            run_video_preprocess_loop(queue, energy_queue, detector_cfg, runtime_router)
+            run_video_preprocess_loop(
+                queue,
+                energy_queue,
+                feedback_queue,
+                detector_cfg,
+                runtime_router,
+            )
         })
         .await;
 
@@ -531,6 +643,7 @@ pub fn pre_process(
 fn run_video_preprocess_loop(
     queue: Arc<RbtSPSCQueueAsync<RbtFrame>>,
     energy_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismFrame>>,
+    feedback_queue: Arc<RbtSPSCQueueAsync<SensData>>,
     _detector_cfg: DetectorCfg,
     runtime_router: RuntimeRouter,
 ) -> Result<PreprocessSummary, String> {
@@ -547,6 +660,13 @@ fn run_video_preprocess_loop(
         reader.height
     );
 
+    let cfg = GENERIC_RBT_CFG.read().unwrap().clone();
+    let offline_feedback = default_feedback(
+        cfg.general_cfg.bullet_speed,
+        cfg.general_cfg.offline_task_mode(),
+    );
+    feedback_queue.push_latest(offline_feedback);
+
     loop {
         if !IS_RUNNING.load(Ordering::SeqCst) {
             info!("pre_process: stopping video source as IS_RUNNING is false");
@@ -558,6 +678,8 @@ fn run_video_preprocess_loop(
             break;
         };
         summary.read_total += read_started.elapsed();
+        feedback_queue.push_latest(offline_feedback);
+        let frame_img = frame_img.rotate180();
 
         let route_state = runtime_router.state();
         if route_state.armor_pipeline_active() {
@@ -1194,6 +1316,7 @@ pub fn energy_mechanism_post_process(
 pub fn energy_mechanism_estimate_process(
     solved_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismSolvedFrame>>,
     track_queue: Arc<RbtSPSCQueueAsync<EnergyMechanismTrackPacket>>,
+    rec: rr::RecordingStream,
     runtime_router: RuntimeRouter,
     completion: RuntimePipelineCompletion,
 ) -> JoinHandle<()> {
@@ -1208,6 +1331,9 @@ pub fn energy_mechanism_estimate_process(
         let mut tracker =
             EnergyMechanismTracker::from_tracker_cfg(EnergyMechanismMode::Small, &tracker_cfg);
         let mut snapshot_seq = 0_u64;
+        let mut center_visible = false;
+        let mut blade_center_visible = false;
+        let mut horizon_visible = false;
         let mut last_transition_seq = runtime_router.state().transition_seq;
         loop {
             ticker.tick().await;
@@ -1239,6 +1365,16 @@ pub fn energy_mechanism_estimate_process(
                 });
             snapshot_seq = snapshot_seq.wrapping_add(1);
             let target = tracker.update(mode, solved.target.as_ref());
+            if let Err(err) = log_rerun_energy_mechanism_snapshot(
+                &rec,
+                snapshot_seq,
+                target,
+                &mut center_visible,
+                &mut blade_center_visible,
+                &mut horizon_visible,
+            ) {
+                warn!("energy_mechanism_estimate_process: failed to log rerun snapshot: {err}");
+            }
             track_queue.push_latest(EnergyMechanismTrackPacket {
                 seq: snapshot_seq,
                 target,
@@ -1386,9 +1522,17 @@ pub fn control_loop_250hz(
                 latest_feedback
                     .as_ref()
                     .map(|(feedback, _)| *feedback)
-                    .unwrap_or_else(|| default_feedback(cfg.general_cfg.bullet_speed))
+                    .unwrap_or_else(|| {
+                        default_feedback(
+                            cfg.general_cfg.bullet_speed,
+                            cfg.general_cfg.offline_task_mode(),
+                        )
+                    })
             } else {
-                default_feedback(cfg.general_cfg.bullet_speed)
+                default_feedback(
+                    cfg.general_cfg.bullet_speed,
+                    cfg.general_cfg.offline_task_mode(),
+                )
             };
 
             if route_state.energy_mechanism_active() {
@@ -1642,7 +1786,7 @@ mod tests {
 
     #[test]
     fn default_feedback_disables_mcu_fire_permit() {
-        let feedback = default_feedback(24.0);
+        let feedback = default_feedback(24.0, TaskMode::AutoShot);
 
         assert_eq!(feedback.gimbal_yaw, 0.0);
         assert_eq!(feedback.gimbal_pitch, 0.0);
@@ -1651,8 +1795,17 @@ mod tests {
     }
 
     #[test]
+    fn default_feedback_can_override_task_mode_for_offline_simulation() {
+        let feedback = default_feedback(24.0, TaskMode::HitBigBuff);
+
+        assert_eq!(feedback.task_mode, TaskMode::HitBigBuff);
+        assert_eq!(feedback.raw_task_mode, TaskMode::HitBigBuff as u8);
+        assert_eq!(feedback.mapped_task_mode, TaskMode::HitBigBuff);
+    }
+
+    #[test]
     fn route_disabled_control_keeps_gimbal_and_stops_fire() {
-        let mut feedback = default_feedback(24.0);
+        let mut feedback = default_feedback(24.0, TaskMode::AutoShot);
         feedback.gimbal_yaw = 12.5;
         feedback.gimbal_pitch = -3.0;
 
