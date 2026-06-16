@@ -123,6 +123,7 @@ async fn main() -> RbtResult<()> {
     let pre_task_handler = pre_process(
         pre_infer_queue.clone(),
         energy_pre_infer_queue.clone(),
+        feedback_queue.clone(),
         cfg.detector_cfg.clone(),
         runtime_router.clone(),
         runtime_completion.clone(),
@@ -159,6 +160,7 @@ async fn main() -> RbtResult<()> {
     let energy_estimate_task_handler = energy_mechanism_estimate_process(
         energy_solved_queue.clone(),
         energy_track_queue.clone(),
+        rec.clone(),
         runtime_router.clone(),
         runtime_completion.clone(),
     );

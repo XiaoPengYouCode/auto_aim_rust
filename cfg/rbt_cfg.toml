@@ -17,7 +17,8 @@ file_log_enable = true
 img_dbg = false
 bullet_speed = 24.0
 can_interface = "can0"
-can_enabled = true
+can_enabled = false
+offline_task_mode = "HitBigBuff"
 
 [detector_cfg]
 # 神经网络模型分别放在 model/armor 和 model/engine_mechanism 目录下
